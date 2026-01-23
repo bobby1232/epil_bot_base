@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from telegram.ext import ContextTypes
+from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
+
+from app.models import Appointment, AppointmentStatus, User, Service
+
+
+REMINDER_48H_TEMPLATE = (
+    "👋 Здравствуйте!\n\n"
+    "Напоминаем о вашей записи:\n"
+    "**{service}**\n"
+    "📅 **{date}**\n"
+    "⏰ **{time}**\n\n"
+    "Если планы изменились — запись можно перенести или отменить заранее.\n"
+    "Будем рады видеть вас 💛"
+)
+
+REMINDER_3H_TEMPLATE = (
+    "⏰ Скоро встречаемся!\n\n"
+    "Ваша запись сегодня:\n"
+    "**{service}**\n"
+    "🕒 **{time}**\n\n"
+    "Пожалуйста, приходите немного заранее.\n"
+    "Если не успеваете — напишите нам, мы постараемся помочь 🤝"
+)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _fmt_date(dt: datetime, tz_name: str) -> tuple[str, str]:
+    # dt в БД timezone-aware; переводим в tz бота (чтобы клиент видел локальное время)
+    try:
+        import pytz
+        tz = pytz.timezone(tz_name)
+        local = dt.astimezone(tz)
+    except Exception:
+        local = dt
+    return local.strftime("%d.%m.%Y"), local.strftime("%H:%M")
+
+
+async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Запускается JobQueue раз в минуту.
+    Шлём:
+      - за 48 часов (флаг reminder_24h_sent используем как "первое напоминание")
+      - за 3 часа   (флаг reminder_2h_sent используем как "второе напоминание")
+    Только для AppointmentStatus.Booked.
+    """
+    app = context.application
+    session_factory = app.bot_data.get("session_factory")
+    if session_factory is None:
+        # если у тебя session_factory хранится иначе — скажи, поменяю
+        return
+
+    tz_name = app.bot_data.get("tz", "Europe/Moscow")
+    now = _utcnow()
+
+    # Окна под отправку (чтобы не ловить погрешности по минутам)
+    # 48 часов: попадаем в окно [48h, 48h+2min)
+    # 3 часа:   попадаем в окно [3h, 3h+2min)
+    win = timedelta(minutes=2)
+
+    target_48_from = now + timedelta(hours=48)
+    target_48_to = target_48_from + win
+
+    target_3_from = now + timedelta(hours=3)
+    target_3_to = target_3_from + win
+
+    async with session_factory() as session:
+        # --- 48h reminders ---
+        q48 = (
+            select(Appointment)
+            .options(selectinload(Appointment.client), selectinload(Appointment.service))
+            .where(Appointment.status == AppointmentStatus.Booked)
+            .where(Appointment.reminder_24h_sent.is_(False))   # используем как "48h не отправляли"
+            .where(Appointment.start_dt >= target_48_from)
+            .where(Appointment.start_dt < target_48_to)
+        )
+        res48 = await session.execute(q48)
+        appts48 = list(res48.scalars().all())
+
+        for appt in appts48:
+            if not appt.client or not appt.client.tg_id:
+                continue
+
+            d, t = _fmt_date(appt.start_dt, tz_name)
+            text = REMINDER_48H_TEMPLATE.format(
+                service=(appt.service.name if appt.service else "Услуга"),
+                date=d,
+                time=t,
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=appt.client.tg_id,
+                    text=text,
+                    parse_mode="Markdown",
+                )
+                # помечаем как отправленное
+                await session.execute(
+                    update(Appointment)
+                    .where(Appointment.id == appt.id)
+                    .values(reminder_24h_sent=True, updated_at=_utcnow())
+                )
+            except Exception:
+                # не валим весь джоб из-за 1 ошибки
+                continue
+
+        # --- 3h reminders ---
+        q3 = (
+            select(Appointment)
+            .options(selectinload(Appointment.client), selectinload(Appointment.service))
+            .where(Appointment.status == AppointmentStatus.Booked)
+            .where(Appointment.reminder_2h_sent.is_(False))   # используем как "3h не отправляли"
+            .where(Appointment.start_dt >= target_3_from)
+            .where(Appointment.start_dt < target_3_to)
+        )
+        res3 = await session.execute(q3)
+        appts3 = list(res3.scalars().all())
+
+        for appt in appts3:
+            if not appt.client or not appt.client.tg_id:
+                continue
+
+            d, t = _fmt_date(appt.start_dt, tz_name)
+            text = REMINDER_3H_TEMPLATE.format(
+                service=(appt.service.name if appt.service else "Услуга"),
+                time=t,
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=appt.client.tg_id,
+                    text=text,
+                    parse_mode="Markdown",
+                )
+                await session.execute(
+                    update(Appointment)
+                    .where(Appointment.id == appt.id)
+                    .values(reminder_2h_sent=True, updated_at=_utcnow())
+                )
+            except Exception:
+                continue
+
+        await session.commit()
