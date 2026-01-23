@@ -54,10 +54,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unified_text_router))
 
     # periodic jobs (every 60s)
-    async def tick_job(ctx):
-        await tick(ctx.application)
-
-    app.job_queue.run_repeating(tick_job, interval=60, first=10)
+    app.job_queue.run_repeating(lambda ctx: tick(ctx.application), interval=60, first=10)
 
     # ЛОКАЛЬНО: polling, если WEBHOOK_URL пустой
     if cfg.webhook_url:
