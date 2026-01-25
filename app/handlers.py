@@ -88,7 +88,7 @@ async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["Прайс-лист:"]
     for sv in services:
-        lines.append(f"• {sv.name}: €{sv.price} / {int(sv.duration_min)} мин")
+        lines.append(f"• {sv.name}: {sv.price} / {int(sv.duration_min)} мин")
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_kb())
 
 async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -291,7 +291,7 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Услуга: {service.name}\n"
                     f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Длительность: {int(service.duration_min)} мин (+буфер)\n"
-                    f"Цена: €{service.price}\n\n"
+                    f"Цена: {service.price}\n\n"
                     f"Клиент: {update.effective_user.full_name} (@{update.effective_user.username})\n"
                     f"Телефон: {client.phone or '—'}\n"
                     f"Комментарий: {context.user_data.get(K_COMMENT) or '—'}\n\n"
