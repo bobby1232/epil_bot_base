@@ -242,18 +242,51 @@ async def create_hold_appointment(
     return appt
 
 async def get_user_appointments(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
+    """Клиентские 'Мои записи': показываем только актуальные (будущие) записи.
+
+    По умолчанию: Booked + Hold (ожидает подтверждения).
+    """
     u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
+    now_utc = datetime.now(tz=pytz.UTC)
+
     return (await session.execute(
         select(Appointment)
         .options(
             selectinload(Appointment.service),
             selectinload(Appointment.client),
         )
-        .where(Appointment.client_user_id == u.id)
+        .where(
+            and_(
+                Appointment.client_user_id == u.id,
+                Appointment.start_dt >= now_utc,
+                Appointment.status.in_([AppointmentStatus.Booked, AppointmentStatus.Hold]),
+            )
+        )
         .order_by(Appointment.start_dt.asc())
         .limit(limit)
     )).scalars().all()
 
+async def get_user_appointments_history(session: AsyncSession, tg_id: int, limit: int = 20) -> list[Appointment]:
+    """История для клиента: прошедшие записи (без HOLD)."""
+    u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
+    now_utc = datetime.now(tz=pytz.UTC)
+
+    return (await session.execute(
+        select(Appointment)
+        .options(
+            selectinload(Appointment.service),
+            selectinload(Appointment.client),
+        )
+        .where(
+            and_(
+                Appointment.client_user_id == u.id,
+                Appointment.start_dt < now_utc,
+                Appointment.status != AppointmentStatus.Hold,
+            )
+        )
+        .order_by(Appointment.start_dt.desc())
+        .limit(limit)
+    )).scalars().all()
 async def get_appointment(session: AsyncSession, appt_id: int) -> Appointment:
     return (await session.execute(
         select(Appointment)
