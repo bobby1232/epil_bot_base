@@ -6,7 +6,7 @@ import pytz
 from sqlalchemy.orm import selectinload
 
 
-from sqlalchemy import select, text, and_
+from sqlalchemy import select, text, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User, Service, Setting, Appointment, AppointmentStatus, BlockedInterval
@@ -28,46 +28,12 @@ def _parse_hhmm(s: str) -> time:
     hh, mm = s.split(":")
     return time(int(hh), int(mm))
 
-async def seed_defaults_if_needed(
-    session: AsyncSession,
-    cfg=None,
-    *,
-    defaults: dict[str, str] | None = None,
-    **kwargs,
-) -> None:
-    """
-    Идемпотентно создаёт строки в таблице settings.
-    Совместимо с вызовами:
-      - seed_defaults_if_needed(session, defaults=defaults_dict)
-      - seed_defaults_if_needed(session, cfg)   (старый стиль)
-    """
-    # allow passing defaults via kwargs in case caller used different signature
-    if defaults is None:
-        defaults = kwargs.get("defaults")
-
-    if defaults is None and cfg is not None:
-        # best-effort defaults from cfg (if caller passes cfg instead of dict)
-        defaults = {
-            "slot_step_min": str(getattr(cfg, "slot_step_min", 15)),
-            "buffer_min": str(getattr(cfg, "buffer_min", 0)),
-            "min_lead_time_min": str(getattr(cfg, "min_lead_time_min", 60)),
-            "booking_horizon_days": str(getattr(cfg, "booking_horizon_days", 30)),
-            "hold_ttl_min": str(getattr(cfg, "hold_ttl_min", 15)),
-            "cancel_limit_hours": str(getattr(cfg, "cancel_limit_hours", 24)),
-            "work_start": str(getattr(cfg, "work_start", "10:00")),
-            "work_end": str(getattr(cfg, "work_end", "20:00")),
-            "work_days": str(getattr(cfg, "work_days", "0,1,2,3,4,5,6")),
-        }
-
-    if defaults is None:
-        defaults = {}
-
+async def seed_defaults_if_needed(session: AsyncSession, *, defaults: dict[str, str]) -> None:
     existing = await session.execute(select(Setting.key).limit(1))
     if existing.first():
         return
-
     for k, v in defaults.items():
-        session.add(Setting(key=str(k), value=str(v)))
+        session.add(Setting(key=k, value=str(v)))
 
 async def get_settings(session: AsyncSession, tz_name: str) -> SettingsView:
     tz = pytz.timezone(tz_name)
@@ -276,15 +242,63 @@ async def create_hold_appointment(
     return appt
 
 async def get_user_appointments(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
+    """
+    Мои записи (актуальные):
+    - только будущие
+    - Booked + активные Hold
+    - исключаем Rejected/Canceled/Completed
+    """
     u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
+    now_utc = datetime.now(tz=pytz.UTC)
+
     return (await session.execute(
         select(Appointment)
         .options(
             selectinload(Appointment.service),
             selectinload(Appointment.client),
         )
-        .where(Appointment.client_user_id == u.id)
+        .where(
+            and_(
+                Appointment.client_user_id == u.id,
+                Appointment.start_dt >= now_utc,
+                or_(
+                    Appointment.status == AppointmentStatus.Booked,
+                    and_(
+                        Appointment.status == AppointmentStatus.Hold,
+                        Appointment.hold_expires_at.is_not(None),
+                        Appointment.hold_expires_at > now_utc,
+                    ),
+                ),
+            )
+        )
         .order_by(Appointment.start_dt.asc())
+        .limit(limit)
+    )).scalars().all()
+
+
+async def get_user_appointments_history(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
+    """
+    История:
+    - прошедшие записи (start_dt < now)
+    - без Hold (они либо сгорели/подтвердились, либо не нужны в истории)
+    """
+    u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
+    now_utc = datetime.now(tz=pytz.UTC)
+
+    return (await session.execute(
+        select(Appointment)
+        .options(
+            selectinload(Appointment.service),
+            selectinload(Appointment.client),
+        )
+        .where(
+            and_(
+                Appointment.client_user_id == u.id,
+                Appointment.start_dt < now_utc,
+                Appointment.status != AppointmentStatus.Hold,
+            )
+        )
+        .order_by(Appointment.start_dt.desc())
         .limit(limit)
     )).scalars().all()
 
