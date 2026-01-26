@@ -28,12 +28,46 @@ def _parse_hhmm(s: str) -> time:
     hh, mm = s.split(":")
     return time(int(hh), int(mm))
 
-async def seed_defaults_if_needed(session: AsyncSession, *, defaults: dict[str, str]) -> None:
+async def seed_defaults_if_needed(
+    session: AsyncSession,
+    cfg=None,
+    *,
+    defaults: dict[str, str] | None = None,
+    **kwargs,
+) -> None:
+    """
+    Идемпотентно создаёт строки в таблице settings.
+    Совместимо с вызовами:
+      - seed_defaults_if_needed(session, defaults=defaults_dict)
+      - seed_defaults_if_needed(session, cfg)   (старый стиль)
+    """
+    # allow passing defaults via kwargs in case caller used different signature
+    if defaults is None:
+        defaults = kwargs.get("defaults")
+
+    if defaults is None and cfg is not None:
+        # best-effort defaults from cfg (if caller passes cfg instead of dict)
+        defaults = {
+            "slot_step_min": str(getattr(cfg, "slot_step_min", 15)),
+            "buffer_min": str(getattr(cfg, "buffer_min", 0)),
+            "min_lead_time_min": str(getattr(cfg, "min_lead_time_min", 60)),
+            "booking_horizon_days": str(getattr(cfg, "booking_horizon_days", 30)),
+            "hold_ttl_min": str(getattr(cfg, "hold_ttl_min", 15)),
+            "cancel_limit_hours": str(getattr(cfg, "cancel_limit_hours", 24)),
+            "work_start": str(getattr(cfg, "work_start", "10:00")),
+            "work_end": str(getattr(cfg, "work_end", "20:00")),
+            "work_days": str(getattr(cfg, "work_days", "0,1,2,3,4,5,6")),
+        }
+
+    if defaults is None:
+        defaults = {}
+
     existing = await session.execute(select(Setting.key).limit(1))
     if existing.first():
         return
+
     for k, v in defaults.items():
-        session.add(Setting(key=k, value=str(v)))
+        session.add(Setting(key=str(k), value=str(v)))
 
 async def get_settings(session: AsyncSession, tz_name: str) -> SettingsView:
     tz = pytz.timezone(tz_name)
@@ -242,74 +276,17 @@ async def create_hold_appointment(
     return appt
 
 async def get_user_appointments(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
-    """
-    МОИ ЗАПИСИ:
-    - только будущие (start_dt >= now)
-    - только Booked
-    - Hold только если ещё не истёк (hold_expires_at > now)
-    - исключаем Rejected/Canceled/Completed
-    """
     u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
-    now_utc = datetime.now(tz=pytz.UTC)
-
-    q = (
+    return (await session.execute(
         select(Appointment)
         .options(
             selectinload(Appointment.service),
             selectinload(Appointment.client),
         )
-        .where(
-            and_(
-                Appointment.client_user_id == u.id,
-                Appointment.start_dt >= now_utc,
-                (
-                    (Appointment.status == AppointmentStatus.Booked)
-                    | (
-                        and_(
-                            Appointment.status == AppointmentStatus.Hold,
-                            Appointment.hold_expires_at.is_not(None),
-                            Appointment.hold_expires_at > now_utc,
-                        )
-                    )
-                ),
-            )
-        )
+        .where(Appointment.client_user_id == u.id)
         .order_by(Appointment.start_dt.asc())
         .limit(limit)
-    )
-    return (await session.execute(q)).scalars().all()
-
-async def get_user_appointments_history(session: AsyncSession, tg_id: int, limit: int = 20) -> list[Appointment]:
-    """
-    ИСТОРИЯ:
-    - прошедшие записи (start_dt < now) ИЛИ завершённые/отменённые статусы
-    - не показываем активные Hold (они относятся к 'Мои записи')
-    """
-    u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
-    now_utc = datetime.now(tz=pytz.UTC)
-
-    q = (
-        select(Appointment)
-        .options(
-            selectinload(Appointment.service),
-            selectinload(Appointment.client),
-        )
-        .where(
-            and_(
-                Appointment.client_user_id == u.id,
-                # всё, что уже в прошлом, плюс явно финальные статусы
-                (
-                    (Appointment.start_dt < now_utc)
-                    | (Appointment.status.in_([AppointmentStatus.Rejected, AppointmentStatus.Canceled, AppointmentStatus.Completed]))
-                ),
-                # исключаем активные hold
-                Appointment.status != AppointmentStatus.Hold,
-            )
-        )
-        .order_by(Appointment.start_dt.desc())
-        .limit(limit)
-    )
-    return (await session.execute(q)).scalars().all()
+    )).scalars().all()
 
 async def get_appointment(session: AsyncSession, appt_id: int) -> Appointment:
     return (await session.execute(
@@ -368,48 +345,3 @@ async def admin_list_holds(session: AsyncSession) -> list[Appointment]:
         .where(Appointment.status == AppointmentStatus.Hold)
         .order_by(Appointment.hold_expires_at.asc())
     )).scalars().all()
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import Setting, Service
-
-
-async def seed_defaults_if_needed(session: AsyncSession, cfg) -> None:
-    """
-    Создаёт дефолтные настройки в таблице settings, если они ещё не существуют.
-    Вызывается при старте приложения.
-    """
-    res = await session.execute(select(Setting))
-    existing = res.scalars().all()
-    if existing:
-        return
-
-    defaults = [
-        ("hold_ttl_min", "15"),
-        ("cancel_limit_hours", "24"),
-    ]
-
-    for key, value in defaults:
-        session.add(Setting(key=key, value=value))
-
-    await session.flush()
-
-
-async def ensure_default_services(session: AsyncSession) -> None:
-    """
-    Гарантирует, что в системе есть хотя бы одна активная услуга.
-    """
-    res = await session.execute(select(Service).limit(1))
-    service = res.scalar_one_or_none()
-    if service:
-        return
-
-    session.add(
-        Service(
-            name="Эпиляция (пример)",
-            price="0",
-            duration_min=30,
-            is_active=True,
-        )
-    )
-    await session.flush()
