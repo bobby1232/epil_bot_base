@@ -242,39 +242,21 @@ async def create_hold_appointment(
     return appt
 
 async def get_user_appointments(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
-    """Upcoming appointments for client (for 'Мои записи').
-
-    - Shows future Booked + active Hold (non-expired).
-    - Uses UTC as source of truth for comparisons.
-    """
     u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
-    now_utc = datetime.now(tz=pytz.UTC)
-
     return (await session.execute(
         select(Appointment)
         .options(
             selectinload(Appointment.service),
             selectinload(Appointment.client),
         )
-        .where(
-            and_(
-                Appointment.client_user_id == u.id,
-                Appointment.start_dt >= now_utc,
-                Appointment.status.in_([AppointmentStatus.Booked, AppointmentStatus.Hold]),
-                # if Hold: must be not expired (or no expiry set)
-                (
-                    (Appointment.status != AppointmentStatus.Hold)
-                    | (Appointment.hold_expires_at.is_(None))
-                    | (Appointment.hold_expires_at > now_utc)
-                ),
-            )
-        )
+        .where(Appointment.client_user_id == u.id)
         .order_by(Appointment.start_dt.asc())
         .limit(limit)
     )).scalars().all()
 
-async def get_user_appointments_history(session: AsyncSession, tg_id: int, limit: int = 20) -> list[Appointment]:
-    """Past appointments for client (for 'История')."""
+
+async def get_user_appointments_history(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
+    """Прошедшие записи клиента (история). HOLD сюда не включаем."""
     u = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
     now_utc = datetime.now(tz=pytz.UTC)
 
@@ -288,7 +270,7 @@ async def get_user_appointments_history(session: AsyncSession, tg_id: int, limit
             and_(
                 Appointment.client_user_id == u.id,
                 Appointment.start_dt < now_utc,
-                Appointment.status.in_([AppointmentStatus.Booked, AppointmentStatus.Canceled, AppointmentStatus.Completed, AppointmentStatus.Rejected]),
+                Appointment.status != AppointmentStatus.Hold,
             )
         )
         .order_by(Appointment.start_dt.desc())

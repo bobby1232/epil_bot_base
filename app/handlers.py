@@ -11,6 +11,7 @@ from app.config import Config
 from app.logic import (
     get_settings, upsert_user, set_user_phone, list_active_services, list_available_dates,
     list_available_slots_for_service, create_hold_appointment, get_user_appointments,
+    get_user_appointments_history,
     get_appointment, admin_confirm, admin_reject, cancel_by_client
 ,
     admin_list_appointments_for_day, admin_list_holds
@@ -61,6 +62,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_contacts(update, context)
     if txt == "Мои записи":
         return await show_my_appointments(update, context)
+    if txt == "История":
+        return await show_my_history(update, context)
     if txt == "Задать вопрос":
         return await ask_question(update, context)
 
@@ -320,15 +323,11 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = await get_settings(s, cfg.timezone)
 
         # 4) проверяем, что есть данные для создания заявки
-        svc_id = context.user_data.get(K_SVC)
-        slot_iso = context.user_data.get(K_SLOT)
+        service_id = context.user_data.get(K_SERVICE_ID)
+        start_local = context.user_data.get(K_START_LOCAL)
         comment = context.user_data.get(K_COMMENT)
 
-        start_local = None
-        if slot_iso:
-            start_local = datetime.fromisoformat(slot_iso)
-
-        if not svc_id or not start_local:
+        if not service_id or not start_local:
             # не молчим — даём понятный next step
             context.user_data["awaiting_phone"] = False
             await s.commit()
@@ -341,7 +340,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 5) достаём service из БД
         services = await list_active_services(s)
-        service = next((x for x in services if x.id == int(svc_id)), None)
+        service = next((x for x in services if x.id == int(service_id)), None)
         if not service:
             context.user_data["awaiting_phone"] = False
             await s.commit()
@@ -393,7 +392,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # можно убрать данные записи, чтобы не было “призраков”
     # (если хочешь сохранять — не удаляй)
-    for k in [K_SVC, K_DATE, K_SLOT, K_COMMENT]:
+    for k in [K_SERVICE_ID, K_START_LOCAL, K_COMMENT]:
         context.user_data.pop(k, None)
 
     # 8) уведомляем клиента
@@ -415,7 +414,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=admin_id,
             text=(
-                f"🆕 Новая заявка (HOLD)\n"
+                "🆕 Новая заявка (HOLD)\n"
                 f"#{appt.id}\n"
                 f"{service.name}\n"
                 f"{local_dt.strftime('%d.%m %H:%M')}\n"
@@ -423,7 +422,6 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Телефон: {phone}\n"
                 f"Комментарий: {comment or '—'}"
             ),
-            reply_markup=admin_request_kb(appt.id),
         )
     except Exception:
         # не валим клиентский флоу из-за админ-уведомления
@@ -497,6 +495,28 @@ async def show_my_appointments_from_cb(update: Update, context: ContextTypes.DEF
     if not appts:
         return await update.callback_query.message.edit_text("У вас пока нет записей.")
     await update.callback_query.message.edit_text("Ваши записи:", reply_markup=my_appts_kb(appts))
+
+
+async def show_my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        appts = await get_user_appointments_history(s, update.effective_user.id, limit=10)
+    if not appts:
+        await update.message.reply_text("История пустая.", reply_markup=main_menu_kb())
+        return
+    await update.message.reply_text("История:", reply_markup=my_appts_kb(appts))
+
+async def show_my_history_from_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        appts = await get_user_appointments_history(s, update.effective_user.id, limit=10)
+    if not appts:
+        return await update.callback_query.message.edit_text("История пустая.")
+    await update.callback_query.message.edit_text("История:", reply_markup=my_appts_kb(appts))
 
 async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
