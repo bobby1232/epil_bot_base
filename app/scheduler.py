@@ -1,26 +1,33 @@
 from datetime import datetime
 import pytz
+
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import Appointment, AppointmentStatus
-from app.logic import get_settings
 
 
 async def tick(application):
     """
-    Сжигает истёкшие HOLD-заявки.
-    Идемпотентен: одна заявка обрабатывается ровно один раз.
+    Автоматически сжигает истёкшие HOLD-заявки
+    и уведомляет клиента ОДИН РАЗ.
     """
-    session_factory = application.bot_data["session_factory"]
-    cfg = application.bot_data["cfg"]
 
+    session_factory = application.bot_data["session_factory"]
     now_utc = datetime.now(tz=pytz.UTC)
 
+    # сюда собираем уведомления ПОКА сессия жива
+    notifications: list[tuple[int, str]] = []
+
     async with session_factory() as s:  # type: AsyncSession
-        # 1) выбираем ТОЛЬКО истёкшие HOLD
+        # 1️⃣ Берём ТОЛЬКО истёкшие HOLD
         res = await s.execute(
             select(Appointment)
+            .options(
+                selectinload(Appointment.client),
+                selectinload(Appointment.service),
+            )
             .where(
                 and_(
                     Appointment.status == AppointmentStatus.Hold,
@@ -29,30 +36,39 @@ async def tick(application):
                 )
             )
         )
+
         expired = res.scalars().all()
-
         if not expired:
-            return  # нечего делать — важно, чтобы не было спама
+            return  # Нечего сжигать → не шлём сообщений
 
-        # 2) обновляем статус
+        # 2️⃣ Обновляем статус + готовим сообщения
         for appt in expired:
             appt.status = AppointmentStatus.Rejected
             appt.updated_at = now_utc
 
-        await s.commit()  # ФИКСИРУЕМ ОДИН РАЗ
+            chat_id = appt.client.tg_id
+            service_name = appt.service.name if appt.service else "—"
+            dt_txt = appt.start_dt.astimezone(pytz.UTC).strftime("%d.%m %H:%M")
 
-    # 3) уведомляем клиентов УЖЕ ПОСЛЕ commit
-    #    (если бот упадёт — статус уже сохранён, повторов не будет)
-    for appt in expired:
-        try:
-            await application.bot.send_message(
-                chat_id=appt.client.tg_id,
-                text=(
-                    "⏳ Заявка не была подтверждена мастером и автоматически отменена.\n\n"
-                    f"Дата/время: {appt.start_dt.astimezone(pytz.UTC).strftime('%d.%m %H:%M')}\n"
-                    "Вы можете выбрать другое время в меню «Записаться»."
-                ),
+            notifications.append(
+                (
+                    chat_id,
+                    (
+                        "⏳ Заявка не была подтверждена мастером и автоматически отменена.\n\n"
+                        f"Услуга: {service_name}\n"
+                        f"Дата/время: {dt_txt}\n\n"
+                        "Вы можете выбрать другое время в меню «Записаться»."
+                    ),
+                )
             )
-        except Exception:
-            # не валим тик из-за проблем с одним клиентом
-            pass
+
+        # 3️⃣ Фиксируем изменения В БАЗЕ
+        await s.commit()
+
+    # 4️⃣ Отправляем уведомления ПОСЛЕ commit (важно!)
+    for chat_id, text in notifications:
+        try:
+            await application.bot.send_message(chat_id=chat_id, text=text)
+        except Exception as e:
+            # логируем, но не валим тик
+            print("TICK NOTIFY ERROR:", e)
