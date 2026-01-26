@@ -368,3 +368,48 @@ async def admin_list_holds(session: AsyncSession) -> list[Appointment]:
         .where(Appointment.status == AppointmentStatus.Hold)
         .order_by(Appointment.hold_expires_at.asc())
     )).scalars().all()
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models import Setting, Service
+
+
+async def seed_defaults_if_needed(session: AsyncSession, cfg) -> None:
+    """
+    Создаёт дефолтные настройки в таблице settings, если они ещё не существуют.
+    Вызывается при старте приложения.
+    """
+    res = await session.execute(select(Setting))
+    existing = res.scalars().all()
+    if existing:
+        return
+
+    defaults = [
+        ("hold_ttl_min", "15"),
+        ("cancel_limit_hours", "24"),
+    ]
+
+    for key, value in defaults:
+        session.add(Setting(key=key, value=value))
+
+    await session.flush()
+
+
+async def ensure_default_services(session: AsyncSession) -> None:
+    """
+    Гарантирует, что в системе есть хотя бы одна активная услуга.
+    """
+    res = await session.execute(select(Service).limit(1))
+    service = res.scalar_one_or_none()
+    if service:
+        return
+
+    session.add(
+        Service(
+            name="Эпиляция (пример)",
+            price="0",
+            duration_min=30,
+            is_active=True,
+        )
+    )
+    await session.flush()

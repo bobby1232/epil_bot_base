@@ -282,11 +282,9 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Получает телефон (через contact или текстом), сохраняет его и создаёт HOLD-заявку.
 
-    Критично: берём выбранную услугу/слот из тех же ключей user_data, которые заполняются
+    ВАЖНО: берём выбранную услугу/слот из тех же ключей user_data, которые заполняются
     на шагах выбора услуги/даты/времени: K_SVC ("svc_id") и K_SLOT ("slot_iso").
-    Для обратной совместимости допускаем старые ключи (K_SERVICE_ID / K_START_LOCAL), если они вдруг есть.
     """
-    # 1) мы реально ждём телефон?
     if not context.user_data.get("awaiting_phone"):
         return
 
@@ -294,12 +292,11 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # 2) достаём телефон: контакт или текстом
+    # 1) достаём телефон: контакт или текст
     phone = None
     if msg.contact and msg.contact.phone_number:
         phone = msg.contact.phone_number
     else:
-        # fallback: пользователь ввёл номер руками
         txt = (msg.text or "").strip()
         ok = all(ch.isdigit() or ch in "+-() " for ch in txt) and any(ch.isdigit() for ch in txt)
         if ok:
@@ -309,29 +306,23 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("Не вижу номер телефона. Нажми кнопку «Отправить телефон» 👇")
         return
 
-    phone = _normalize_phone(phone)
+    # нормализация
+    phone = (phone or "").strip()
+    for ch in [" ", "-", "(", ")", "\u00A0"]:
+        phone = phone.replace(ch, "")
 
     cfg: Config = context.bot_data["cfg"]
     session_factory = context.bot_data["session_factory"]
 
-    # 3) читаем выбранные данные записи (сначала новые ключи, потом fallback на старые)
-    svc_id = context.user_data.get(K_SVC) or context.user_data.get("service_id") or context.user_data.get("svc_id")
-    slot_iso = context.user_data.get(K_SLOT) or context.user_data.get("start_local") or context.user_data.get("slot_iso")
+    # 2) читаем данные флоу (услуга/слот/коммент)
+    svc_id = context.user_data.get(K_SVC)
+    slot_iso = context.user_data.get(K_SLOT)
     comment = context.user_data.get(K_COMMENT)
 
-    start_local = None
-    if slot_iso:
-        if isinstance(slot_iso, datetime):
-            start_local = slot_iso
-        else:
-            try:
-                start_local = datetime.fromisoformat(str(slot_iso))
-            except Exception:
-                start_local = None
-
+    # 3) сохраняем телефон + создаём заявку
     async with session_factory() as s:
-        # гарантируем пользователя (важно!)
-        await upsert_user(
+        # гарантируем пользователя
+        client = await upsert_user(
             s,
             tg_id=update.effective_user.id,
             username=update.effective_user.username,
@@ -341,39 +332,30 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         settings = await get_settings(s, cfg.timezone)
 
-        # 4) проверяем, что есть данные для создания заявки
-        if not svc_id or not start_local:
+        # валидация: обязательно должны быть услуга и слот
+        if not svc_id or not slot_iso:
             context.user_data["awaiting_phone"] = False
             await s.commit()
             await msg.reply_text(
-                "Телефон сохранён ✅
-"
+                "Телефон сохранён ✅\n"
                 "Но я не вижу выбранную услугу/время. Начни запись заново: /start → «Записаться».",
                 reply_markup=main_menu_kb(),
             )
             return
 
-        # 5) достаём service из БД
+        start_local = datetime.fromisoformat(slot_iso)
+
         services = await list_active_services(s)
         service = next((x for x in services if x.id == int(svc_id)), None)
         if not service:
             context.user_data["awaiting_phone"] = False
             await s.commit()
             await msg.reply_text(
-                "Телефон сохранён ✅
-"
+                "Телефон сохранён ✅\n"
                 "Выбранная услуга недоступна. Начни запись заново: /start → «Записаться».",
                 reply_markup=main_menu_kb(),
             )
             return
-
-        # 6) создаём HOLD-заявку
-        client = await upsert_user(
-            s,
-            tg_id=update.effective_user.id,
-            username=update.effective_user.username,
-            full_name=update.effective_user.full_name,
-        )
 
         try:
             appt = await create_hold_appointment(
@@ -403,27 +385,23 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("Не удалось создать запись. Попробуй ещё раз: /start", reply_markup=main_menu_kb())
             return
 
-    # 7) флоу завершён: снимаем флаг и чистим временные поля
+    # 4) флоу завершён: снимаем флаг и чистим временные поля
     context.user_data["awaiting_phone"] = False
-    for k in [K_SVC, K_DATE, K_SLOT, K_COMMENT, "service_id", "start_local", "svc_id", "slot_iso"]:
+    for k in [K_SVC, K_DATE, K_SLOT, K_COMMENT]:
         context.user_data.pop(k, None)
 
-    # 8) уведомляем клиента
+    # 5) уведомляем клиента
     local_dt = appt.start_dt.astimezone(settings.tz)
     await msg.reply_text(
-        f"Заявка отправлена ✅
-"
-        f"Услуга: {service.name}
-"
-        f"Дата/время: {local_dt.strftime('%d.%m %H:%M')}
-"
-        f"Статус: {AppointmentStatus.Hold.value}
-"
-        f"Ожидай подтверждения мастера.",
+        "Заявка отправлена ✅\n"
+        f"Услуга: {service.name}\n"
+        f"Дата/время: {local_dt.strftime('%d.%m %H:%M')}\n"
+        "Статус: Ожидает подтверждения\n"
+        "Ожидай подтверждения мастера.",
         reply_markup=main_menu_kb(),
     )
 
-    # 9) уведомляем админа с кнопками
+    # 6) уведомляем админа с кнопками
     try:
         admin_id = int(cfg.admin_telegram_id)
         client_name = (
@@ -433,25 +411,18 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=admin_id,
             text=(
-                "🆕 Новая заявка (HOLD)
-"
-                f"#{appt.id}
-"
-                f"{service.name}
-"
-                f"{local_dt.strftime('%d.%m %H:%M')}
-"
-                f"Клиент: {client_name}
-"
-                f"Телефон: {phone}
-"
+                "🆕 Новая заявка (ожидает подтверждения)\n"
+                f"#{appt.id}\n"
+                f"{service.name}\n"
+                f"{local_dt.strftime('%d.%m %H:%M')}\n"
+                f"Клиент: {client_name}\n"
+                f"Телефон: {phone}\n"
                 f"Комментарий: {comment or '—'}"
             ),
             reply_markup=admin_request_kb(appt.id),
         )
     except Exception:
         pass
-
 
 async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
