@@ -17,7 +17,7 @@ from app.logic import (
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
-    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb, status_ru, weekday_ru_full
+    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb
 ,
     admin_menu_kb
 )
@@ -320,11 +320,15 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = await get_settings(s, cfg.timezone)
 
         # 4) проверяем, что есть данные для создания заявки
-        service_id = context.user_data.get(K_SERVICE_ID)
-        start_local = context.user_data.get(K_START_LOCAL)
+        svc_id = context.user_data.get(K_SVC)
+        slot_iso = context.user_data.get(K_SLOT)
         comment = context.user_data.get(K_COMMENT)
 
-        if not service_id or not start_local:
+        start_local = None
+        if slot_iso:
+            start_local = datetime.fromisoformat(slot_iso)
+
+        if not svc_id or not start_local:
             # не молчим — даём понятный next step
             context.user_data["awaiting_phone"] = False
             await s.commit()
@@ -337,7 +341,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 5) достаём service из БД
         services = await list_active_services(s)
-        service = next((x for x in services if x.id == int(service_id)), None)
+        service = next((x for x in services if x.id == int(svc_id)), None)
         if not service:
             context.user_data["awaiting_phone"] = False
             await s.commit()
@@ -397,8 +401,8 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"Заявка отправлена ✅\n"
         f"Услуга: {service.name}\n"
-        f"Дата/время: {weekday_ru_full(local_dt)}, {local_dt.strftime('%d.%m %H:%M')}\n"
-        f"Статус: {status_ru(AppointmentStatus.Hold.value)}\n"
+        f"Дата/время: {local_dt.strftime('%d.%m %H:%M')}\n"
+        f"Статус: {AppointmentStatus.Hold.value}\n"
         f"Ожидай подтверждения мастера.",
         reply_markup=main_menu_kb(),
     )
@@ -411,14 +415,21 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=admin_id,
             text=(
-                "🆕 Новая заявка (HOLD)\n"
-                f"#{appt.id}\n"
-                f"{service.name}\n"
-                f"{local_dt.strftime('%d.%m %H:%M')}\n"
-                f"Клиент: {client_name}\n"
-                f"Телефон: {phone}\n"
+                "🆕 Новая заявка (HOLD)
+"
+                f"#{appt.id}
+"
+                f"{service.name}
+"
+                f"{local_dt.strftime('%d.%m %H:%M')}
+"
+                f"Клиент: {client_name}
+"
+                f"Телефон: {phone}
+"
                 f"Комментарий: {comment or '—'}"
             ),
+            reply_markup=admin_request_kb(appt.id),
         )
     except Exception:
         # не валим клиентский флоу из-за админ-уведомления
@@ -458,7 +469,7 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=(
                     f"🆕 Новая заявка (HOLD #{appt.id})\n"
                     f"Услуга: {service.name}\n"
-                    f"Дата/время: {weekday_ru_full(appt.start_dt.astimezone(settings.tz))}, {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
+                    f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Длительность: {int(service.duration_min)} мин (+буфер)\n"
                     f"Цена: {service.price}\n\n"
                     f"Клиент: {update.effective_user.full_name} (@{update.effective_user.username})\n"
@@ -502,8 +513,8 @@ async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAU
 
     txt = (
         f"Запись #{appt.id}\n"
-        f"Статус: {status_ru(appt.status.value)}\n"
-        f"Дата/время: {weekday_ru_full(appt.start_dt.astimezone(settings.tz))}, {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
+        f"Статус: {appt.status.value}\n"
+        f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
         f"Услуга: {appt.service.name}\n"
         f"Комментарий: {appt.client_comment or '—'}"
     )
@@ -544,7 +555,7 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                 chat_id=appt.client.tg_id,
                 text=(
                     f"✅ Запись подтверждена!\n"
-                    f"{weekday_ru_full(appt.start_dt.astimezone(settings.tz))}, {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
+                    f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Услуга: {appt.service.name}\n"
                     f"Ждём вас 🙂"
                 )
@@ -618,7 +629,7 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
         client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
         phone = a.client.phone or "—"
-        lines.append(f"• {t} | #{a.id} | {status_ru(a.status.value)} | {a.service.name} | {client} | {phone}")
+        lines.append(f"• {t} | #{a.id} | {a.status.value} | {a.service.name} | {client} | {phone}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
 
