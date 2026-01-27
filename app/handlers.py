@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, date, timedelta
+import logging
 import pytz
 
 from telegram import Update
@@ -22,6 +23,8 @@ from app.keyboards import (
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
+
+logger = logging.getLogger(__name__)
 
 K_SVC = "svc_id"
 K_DATE = "date"
@@ -717,6 +720,13 @@ async def handle_admin_price(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if code == "SLOT_BLOCKED":
                     return await update.message.reply_text("Этот слот заблокирован. Начни запись заново.", reply_markup=admin_menu_kb())
                 raise
+            except Exception as exc:
+                logger.exception("Failed to create admin appointment: %s", exc)
+                _clear_admin_booking(context)
+                return await update.message.reply_text(
+                    "Не удалось создать запись. Проверьте базу и попробуйте ещё раз.",
+                    reply_markup=admin_menu_kb(),
+                )
 
     _clear_admin_booking(context)
     price_label = format_price(price_override if price_override is not None else service.price)
