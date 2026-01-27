@@ -10,19 +10,25 @@ from app.logic import (
     get_settings, upsert_user, set_user_phone, list_active_services, list_available_dates,
     list_available_slots_for_service, create_hold_appointment, get_user_appointments,
     get_user_appointments_history, get_appointment, admin_confirm, admin_reject,
-    cancel_by_client,
+    cancel_by_client, request_reschedule, confirm_reschedule, reject_reschedule,
     admin_list_appointments_for_day, admin_list_holds
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
-    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb, admin_menu_kb
+    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb, admin_menu_kb,
+    reschedule_dates_kb, reschedule_slots_kb, reschedule_confirm_kb, admin_reschedule_kb
 )
 from app.models import AppointmentStatus
+from app.utils import format_price
 
 K_SVC = "svc_id"
 K_DATE = "date"
 K_SLOT = "slot_iso"
 K_COMMENT = "comment"
+K_RESCHED_APPT = "resched_appt_id"
+K_RESCHED_SVC = "resched_svc_id"
+K_RESCHED_DATE = "resched_date"
+K_RESCHED_SLOT = "resched_slot_iso"
 
 def is_admin(cfg: Config, user_id: int) -> bool:
     return user_id == cfg.admin_telegram_id
@@ -97,7 +103,7 @@ async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["Прайс-лист:"]
     for sv in services:
-        lines.append(f"• {sv.name}: {sv.price} / {int(sv.duration_min)} мин")
+        lines.append(f"• {sv.name}: {format_price(sv.price)} / {int(sv.duration_min)} мин")
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_for(update, context))
 
 async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,14 +150,23 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("date:"):
         context.user_data[K_DATE] = data.split(":")[1]
+        if context.user_data.get(K_RESCHED_APPT):
+            return await flow_reschedule_slots(update, context)
         return await flow_slots(update, context)
 
     if data.startswith("slot:"):
         context.user_data[K_SLOT] = data.split("slot:")[1]
+        if context.user_data.get(K_RESCHED_APPT):
+            context.user_data[K_RESCHED_SLOT] = context.user_data[K_SLOT]
+            return await confirm_reschedule_request(update, context)
         return await flow_comment(update, context)
 
     if data == "req:send":
         return await finalize_request(update, context)
+
+    if data.startswith("myresched:"):
+        appt_id = int(data.split(":")[1])
+        return await start_reschedule(update, context, appt_id)
 
     if data.startswith("adm:confirm:"):
         appt_id = int(data.split(":")[2])
@@ -194,6 +209,28 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         appt_id = int(data.split(":")[2])
         return await reminder_cancel(update, context, appt_id)
 
+    if data.startswith("rdate:"):
+        context.user_data[K_RESCHED_DATE] = data.split(":")[1]
+        return await flow_reschedule_slots(update, context)
+
+    if data.startswith("rslot:"):
+        context.user_data[K_RESCHED_SLOT] = data.split(":")[1]
+        return await confirm_reschedule_request(update, context)
+
+    if data == "resched:send":
+        return await finalize_reschedule_request(update, context)
+
+    if data == "rback:dates":
+        return await flow_reschedule_dates(update, context)
+
+    if data.startswith("adm:resched:confirm:"):
+        appt_id = int(data.split(":")[3])
+        return await admin_reschedule_confirm(update, context, appt_id)
+
+    if data.startswith("adm:resched:reject:"):
+        appt_id = int(data.split(":")[3])
+        return await admin_reschedule_reject(update, context, appt_id)
+
 async def flow_services_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.callback_query.message
     session_factory = context.bot_data["session_factory"]
@@ -233,7 +270,7 @@ async def flow_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def flow_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.message.edit_text(
-        "Комментарий (опционально). Отправь «-», если без комментария."
+        "Комментарий (при желании). Отправь «-», если без комментария."
     )
     context.user_data["awaiting_comment"] = True
 
@@ -510,12 +547,18 @@ async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAU
         settings = await get_settings(s, cfg.timezone)
         appt = await get_appointment(s, appt_id)
 
+    proposed = ""
+    if appt.proposed_alt_start_dt:
+        proposed_dt = appt.proposed_alt_start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')
+        proposed = f"\nЗапрос на перенос: {proposed_dt} (ожидает подтверждения)"
+
     txt = (
         f"Запись #{appt.id}\n"
         f"Статус: {appt.status.value}\n"
         f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
         f"Услуга: {appt.service.name}\n"
         f"Комментарий: {appt.client_comment or '—'}"
+        f"{proposed}"
     )
     kb = my_appt_actions_kb(appt.id) if appt.status == AppointmentStatus.Booked else None
     await update.callback_query.message.edit_text(txt, reply_markup=kb)
@@ -537,6 +580,122 @@ async def client_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, appt
                 text=f"🚫 Клиент отменил запись #{appt.id} на {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}"
             )
     await update.callback_query.message.edit_text("Запись отменена ✅")
+
+async def start_reschedule(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
+    cfg: Config = context.bot_data["cfg"]
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            appt = await get_appointment(s, appt_id)
+            if appt.client.tg_id != update.effective_user.id:
+                return await update.callback_query.message.edit_text("Нет доступа.")
+            if appt.status != AppointmentStatus.Booked:
+                return await update.callback_query.message.edit_text("Перенос доступен только для подтверждённых записей.")
+            now_utc = datetime.now(tz=pytz.UTC)
+            if now_utc > (appt.start_dt - timedelta(hours=settings.cancel_limit_hours)):
+                return await update.callback_query.message.edit_text("До визита осталось слишком мало времени. Для переноса свяжитесь напрямую.")
+
+    context.user_data[K_RESCHED_APPT] = appt_id
+    context.user_data[K_RESCHED_SVC] = appt.service_id
+    return await flow_reschedule_dates(update, context)
+
+async def flow_reschedule_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session_factory = context.bot_data["session_factory"]
+    cfg: Config = context.bot_data["cfg"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        dates = await list_available_dates(s, settings)
+    await update.callback_query.message.edit_text("Выбери новую дату для переноса:", reply_markup=reschedule_dates_kb(dates))
+
+async def flow_reschedule_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session_factory = context.bot_data["session_factory"]
+    cfg: Config = context.bot_data["cfg"]
+    svc_id = context.user_data.get(K_RESCHED_SVC)
+    day_iso = context.user_data.get(K_RESCHED_DATE) or context.user_data.get(K_DATE)
+    if not svc_id or not day_iso:
+        return await update.callback_query.message.edit_text("Сессия сброшена. Нажми «Мои записи» и начни перенос заново.")
+    day = date.fromisoformat(day_iso)
+
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        services = await list_active_services(s)
+        service = next((x for x in services if x.id == svc_id), None)
+        if not service:
+            return await update.callback_query.message.edit_text("Услуга недоступна.")
+        slots = await list_available_slots_for_service(s, settings, service, day)
+
+    if not slots:
+        return await update.callback_query.message.edit_text("На эту дату нет свободных слотов. Выбери другую дату.")
+
+    await update.callback_query.message.edit_text("Выбери новое время:", reply_markup=reschedule_slots_kb(slots))
+
+async def confirm_reschedule_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session_factory = context.bot_data["session_factory"]
+    cfg: Config = context.bot_data["cfg"]
+    appt_id = context.user_data.get(K_RESCHED_APPT)
+    slot_iso = context.user_data.get(K_RESCHED_SLOT)
+    if not appt_id or not slot_iso:
+        return await update.callback_query.message.edit_text("Сессия сброшена. Нажми «Мои записи» и начни перенос заново.")
+
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        appt = await get_appointment(s, appt_id)
+
+    new_dt = datetime.fromisoformat(slot_iso).astimezone(settings.tz).strftime('%d.%m %H:%M')
+    old_dt = appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')
+    await update.callback_query.message.edit_text(
+        f"Запросить перенос записи?\nТекущее время: {old_dt}\nНовое время: {new_dt}",
+        reply_markup=reschedule_confirm_kb()
+    )
+
+async def finalize_reschedule_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    session_factory = context.bot_data["session_factory"]
+    appt_id = context.user_data.get(K_RESCHED_APPT)
+    slot_iso = context.user_data.get(K_RESCHED_SLOT)
+    if not appt_id or not slot_iso:
+        return await update.callback_query.message.edit_text("Сессия сброшена. Нажми «Мои записи» и начни перенос заново.")
+
+    async with session_factory() as s:
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            appt = await get_appointment(s, appt_id)
+            if appt.client.tg_id != update.effective_user.id:
+                return await update.callback_query.message.edit_text("Нет доступа.")
+            try:
+                await request_reschedule(s, settings, appt, datetime.fromisoformat(slot_iso))
+            except ValueError as e:
+                code = str(e)
+                if code == "SLOT_TAKEN":
+                    return await update.callback_query.message.edit_text("Этот слот уже занят. Выбери другое время.")
+                if code == "SLOT_BLOCKED":
+                    return await update.callback_query.message.edit_text("Это время заблокировано. Выбери другое.")
+                return await update.callback_query.message.edit_text("Не удалось отправить запрос на перенос. Попробуй ещё раз.")
+
+            new_local = appt.proposed_alt_start_dt.astimezone(settings.tz)
+            old_local = appt.start_dt.astimezone(settings.tz)
+
+            await context.bot.send_message(
+                chat_id=cfg.admin_telegram_id,
+                text=(
+                    "🔄 Запрос на перенос записи\n"
+                    f"#{appt.id}\n"
+                    f"Услуга: {appt.service.name}\n"
+                    f"Текущее время: {old_local.strftime('%d.%m %H:%M')}\n"
+                    f"Новое время: {new_local.strftime('%d.%m %H:%M')}\n"
+                    f"Клиент: {appt.client.full_name or appt.client.tg_id}\n"
+                    f"Телефон: {appt.client.phone or '—'}"
+                ),
+                reply_markup=admin_reschedule_kb(appt.id),
+            )
+
+    for k in (K_RESCHED_APPT, K_RESCHED_SVC, K_RESCHED_DATE, K_RESCHED_SLOT, K_DATE, K_SLOT):
+        context.user_data.pop(k, None)
+
+    await update.callback_query.message.edit_text(
+        "Запрос на перенос отправлен ✅\nОжидай подтверждения мастера."
+    )
 
 async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
@@ -582,6 +741,60 @@ async def admin_action_reject(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             )
     await update.callback_query.message.edit_text(f"Отклонено ❌ (#{appt_id})")
+
+async def admin_reschedule_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        return await update.callback_query.message.edit_text("Нет доступа.")
+    session_factory = context.bot_data["session_factory"]
+
+    async with session_factory() as s:
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            appt = await get_appointment(s, appt_id)
+            if not appt.proposed_alt_start_dt:
+                return await update.callback_query.message.edit_text("Запрос на перенос не найден.")
+            try:
+                await confirm_reschedule(s, settings, appt)
+            except ValueError as e:
+                code = str(e)
+                if code == "SLOT_TAKEN":
+                    return await update.callback_query.message.edit_text("Слот уже занят. Запрос не подтверждён.")
+                if code == "SLOT_BLOCKED":
+                    return await update.callback_query.message.edit_text("Слот заблокирован. Запрос не подтверждён.")
+                return await update.callback_query.message.edit_text("Не удалось подтвердить перенос.")
+
+            new_local = appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')
+            await context.bot.send_message(
+                chat_id=appt.client.tg_id,
+                text=(
+                    "✅ Перенос подтверждён!\n"
+                    f"Новая дата/время: {new_local}\n"
+                    f"Услуга: {appt.service.name}"
+                )
+            )
+    await update.callback_query.message.edit_text(f"Перенос подтверждён ✅ (#{appt_id})")
+
+async def admin_reschedule_reject(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        return await update.callback_query.message.edit_text("Нет доступа.")
+    session_factory = context.bot_data["session_factory"]
+
+    async with session_factory() as s:
+        async with s.begin():
+            appt = await get_appointment(s, appt_id)
+            if not appt.proposed_alt_start_dt:
+                return await update.callback_query.message.edit_text("Запрос на перенос не найден.")
+            await reject_reschedule(s, appt)
+            await context.bot.send_message(
+                chat_id=appt.client.tg_id,
+                text=(
+                    "❌ Перенос отклонён мастером.\n"
+                    "Запись остаётся в исходное время."
+                )
+            )
+    await update.callback_query.message.edit_text(f"Перенос отклонён ❌ (#{appt_id})")
 
 async def admin_action_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]

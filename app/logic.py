@@ -241,6 +241,99 @@ async def create_hold_appointment(
     await session.flush()
     return appt
 
+async def request_reschedule(
+    session: AsyncSession,
+    settings: SettingsView,
+    appt: Appointment,
+    new_start_local: datetime,
+) -> None:
+    if appt.status != AppointmentStatus.Booked:
+        raise ValueError("NOT_BOOKED")
+    now_utc = datetime.now(tz=pytz.UTC)
+    start_utc = _to_utc(new_start_local, settings.tz)
+    end_local = compute_slot_end(new_start_local, appt.service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+
+    lock_key = _advisory_key_for_slot(start_utc, appt.service_id)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)").bindparams(k=lock_key))
+
+    overlap = await session.execute(
+        select(Appointment.id).where(
+            and_(
+                Appointment.id != appt.id,
+                Appointment.start_dt < end_utc,
+                Appointment.end_dt > start_utc,
+                Appointment.status.in_([AppointmentStatus.Hold, AppointmentStatus.Booked])
+            )
+        ).limit(1)
+    )
+    if overlap.first():
+        raise ValueError("SLOT_TAKEN")
+
+    block_overlap = await session.execute(
+        select(BlockedInterval.id).where(
+            and_(
+                BlockedInterval.start_dt < end_utc,
+                BlockedInterval.end_dt > start_utc
+            )
+        ).limit(1)
+    )
+    if block_overlap.first():
+        raise ValueError("SLOT_BLOCKED")
+
+    appt.proposed_alt_start_dt = start_utc
+    appt.updated_at = now_utc
+
+async def confirm_reschedule(session: AsyncSession, settings: SettingsView, appt: Appointment) -> None:
+    if appt.status != AppointmentStatus.Booked or not appt.proposed_alt_start_dt:
+        return
+    now_utc = datetime.now(tz=pytz.UTC)
+    start_utc = appt.proposed_alt_start_dt
+    start_local = _to_tz(start_utc, settings.tz)
+    end_local = compute_slot_end(start_local, appt.service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+
+    lock_key = _advisory_key_for_slot(start_utc, appt.service_id)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)").bindparams(k=lock_key))
+
+    overlap = await session.execute(
+        select(Appointment.id).where(
+            and_(
+                Appointment.id != appt.id,
+                Appointment.start_dt < end_utc,
+                Appointment.end_dt > start_utc,
+                Appointment.status.in_([AppointmentStatus.Hold, AppointmentStatus.Booked])
+            )
+        ).limit(1)
+    )
+    if overlap.first():
+        raise ValueError("SLOT_TAKEN")
+
+    block_overlap = await session.execute(
+        select(BlockedInterval.id).where(
+            and_(
+                BlockedInterval.start_dt < end_utc,
+                BlockedInterval.end_dt > start_utc
+            )
+        ).limit(1)
+    )
+    if block_overlap.first():
+        raise ValueError("SLOT_BLOCKED")
+
+    appt.start_dt = start_utc
+    appt.end_dt = end_utc
+    appt.proposed_alt_start_dt = None
+    appt.reminder_24h_sent = False
+    appt.reminder_2h_sent = False
+    appt.visit_confirmed = False
+    appt.updated_at = now_utc
+
+async def reject_reschedule(session: AsyncSession, appt: Appointment) -> None:
+    if not appt.proposed_alt_start_dt:
+        return
+    appt.proposed_alt_start_dt = None
+    appt.updated_at = datetime.now(tz=pytz.UTC)
+
 async def get_user_appointments(session: AsyncSession, tg_id: int, limit: int = 10) -> list[Appointment]:
     """
     Мои записи (актуальные):

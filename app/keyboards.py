@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from app.models import Service, Appointment
+from app.utils import format_price
 
 STATUS_RU = {
     "Hold": "Ожидает подтверждения",
@@ -47,7 +48,8 @@ def phone_request_kb() -> ReplyKeyboardMarkup:
 def services_kb(services: list[Service]) -> InlineKeyboardMarkup:
     rows = []
     for s in services:
-        rows.append([InlineKeyboardButton(f"{s.name} • {int(s.duration_min)} мин • {s.price}", callback_data=f"svc:{s.id}")])
+        price = format_price(s.price)
+        rows.append([InlineKeyboardButton(f"{s.name} • {int(s.duration_min)} мин • {price}", callback_data=f"svc:{s.id}")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
     return InlineKeyboardMarkup(rows)
 
@@ -99,8 +101,41 @@ def my_appts_kb(appts: list[Appointment], tz=None) -> InlineKeyboardMarkup:
 
 def my_appt_actions_kb(appt_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Перенести", callback_data=f"myresched:{appt_id}")],
         [InlineKeyboardButton("🚫 Отменить", callback_data=f"mycancel:{appt_id}")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="myback:list")]
+    ])
+
+def reschedule_dates_kb(dates: list[date]) -> InlineKeyboardMarkup:
+    rows = []
+    for d in dates:
+        rows.append([InlineKeyboardButton(d.strftime("%d.%m (%a)"), callback_data=f"rdate:{d.isoformat()}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="myback:list")])
+    return InlineKeyboardMarkup(rows)
+
+def reschedule_slots_kb(slots_local: list[datetime]) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for dt in slots_local:
+        row.append(InlineKeyboardButton(dt.strftime("%H:%M"), callback_data=f"rslot:{dt.isoformat()}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="rback:dates")])
+    return InlineKeyboardMarkup(rows)
+
+def reschedule_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Отправить запрос", callback_data="resched:send")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="rback:dates")]
+    ])
+
+def admin_reschedule_kb(appt_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Подтвердить перенос", callback_data=f"adm:resched:confirm:{appt_id}")],
+        [InlineKeyboardButton("❌ Отклонить перенос", callback_data=f"adm:resched:reject:{appt_id}")],
     ])
 
 def reminder_kb(appt_id: int) -> InlineKeyboardMarkup:
