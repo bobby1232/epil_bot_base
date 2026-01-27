@@ -4,23 +4,18 @@ import pytz
 
 from telegram import Update
 from telegram.ext import ContextTypes
-from app.keyboards import admin_menu_kb
-
 
 from app.config import Config
 from app.logic import (
     get_settings, upsert_user, set_user_phone, list_active_services, list_available_dates,
     list_available_slots_for_service, create_hold_appointment, get_user_appointments,
-    get_user_appointments_history,
-    get_appointment, admin_confirm, admin_reject, cancel_by_client
-,
+    get_user_appointments_history, get_appointment, admin_confirm, admin_reject,
+    cancel_by_client,
     admin_list_appointments_for_day, admin_list_holds
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
-    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb
-,
-    admin_menu_kb
+    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb, admin_menu_kb
 )
 from app.models import AppointmentStatus
 
@@ -50,6 +45,8 @@ async def unified_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await handle_question(update, context)
     if context.user_data.get("awaiting_comment"):
         return await handle_comment(update, context)
+    if context.user_data.get("awaiting_phone"):
+        return await handle_contact(update, context)
     return await text_router(update, context)
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,7 +71,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await admin_day_view(update, context, offset_days=0)
         if txt == "📅 Записи завтра":
             return await admin_day_view(update, context, offset_days=1)
-        if txt == "🧾 Все заявки (Hold)":
+        if txt == "🧾 Все заявки (Ожидание)":
             return await admin_holds_view(update, context)
         if txt == "⬅️ В главное меню":
             await update.message.reply_text("Главное меню 👇", reply_markup=main_menu_kb())
@@ -248,34 +245,6 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=phone_request_kb()
     )
     return
-
-
-from datetime import datetime
-import pytz
-from telegram import Update
-from telegram.ext import ContextTypes
-
-# проверь, что эти импорты у тебя есть
-from app.logic import (
-    get_settings, list_active_services, create_hold_appointment,
-    upsert_user, set_user_phone,
-)
-from app.keyboards import main_menu_kb
-from app.config import Config
-from app.models import AppointmentStatus
-
-# ВАЖНО: эти ключи должны совпадать с тем, что ты пишешь в user_data в других шагах
-# Если у тебя другие названия — замени тут на свои.
-K_SERVICE_ID = "service_id"
-K_START_LOCAL = "start_local"   # должен быть datetime в timezone settings.tz
-K_COMMENT = "comment"
-
-
-def _normalize_phone(s: str) -> str:
-    s = (s or "").strip()
-    for ch in [" ", "-", "(", ")", "\u00A0"]:
-        s = s.replace(ch, "")
-    return s
 
 
 async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
