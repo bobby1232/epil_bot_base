@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import select, text
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 from app.config import load_config
@@ -18,6 +18,12 @@ logging.basicConfig(level=logging.INFO)
 async def init_db(engine):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(
+                text("ALTER TABLE appointments ADD COLUMN IF NOT EXISTS price_override NUMERIC(10, 2)")
+            )
+        except Exception as exc:
+            logger.warning("Failed to ensure price_override column exists: %s", exc)
 
 
 async def seed_db(session_factory, cfg):
@@ -43,6 +49,13 @@ async def seed_db(session_factory, cfg):
                 setting.value = str(cfg.cancel_limit_hours)
             else:
                 s.add(Setting(key="cancel_limit_hours", value=str(cfg.cancel_limit_hours)))
+            booking_setting = (await s.execute(
+                select(Setting).where(Setting.key == "booking_horizon_days")
+            )).scalar_one_or_none()
+            if booking_setting:
+                booking_setting.value = str(cfg.booking_horizon_days)
+            else:
+                s.add(Setting(key="booking_horizon_days", value=str(cfg.booking_horizon_days)))
 
 
 def main():
