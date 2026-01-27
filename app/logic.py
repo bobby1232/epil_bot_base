@@ -493,6 +493,22 @@ async def cancel_by_client(session: AsyncSession, settings: SettingsView, appt: 
     appt.updated_at = now_utc
     return True
 
+async def admin_cancel_appointment(session: AsyncSession, appt: Appointment) -> bool:
+    if appt.status != AppointmentStatus.Booked:
+        return False
+    appt.status = AppointmentStatus.Canceled
+    appt.updated_at = datetime.now(tz=pytz.UTC)
+    return True
+
+async def admin_reschedule_appointment(
+    session: AsyncSession,
+    settings: SettingsView,
+    appt: Appointment,
+    new_start_local: datetime,
+) -> None:
+    await request_reschedule(session, settings, appt, new_start_local)
+    await confirm_reschedule(session, settings, appt)
+
 async def admin_list_appointments_for_day(session: AsyncSession, tz: pytz.BaseTzInfo, day: date) -> list[Appointment]:
     start_local = tz.localize(datetime.combine(day, datetime.min.time()))
     end_local = start_local + timedelta(days=1)

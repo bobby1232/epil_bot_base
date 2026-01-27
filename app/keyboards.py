@@ -102,6 +102,12 @@ def admin_request_kb(appt_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💬 Написать клиенту", callback_data=f"adm:msg:{appt_id}")],
     ])
 
+def admin_manage_appt_kb(appt_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Перенести", callback_data=f"admresched:start:{appt_id}")],
+        [InlineKeyboardButton("🚫 Отменить", callback_data=f"adm:cancel:{appt_id}")],
+    ])
+
 def my_appts_kb(appts: list[Appointment], tz=None) -> InlineKeyboardMarkup:
     rows = []
     for a in appts:
@@ -152,6 +158,32 @@ def admin_reschedule_kb(appt_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Подтвердить перенос", callback_data=f"adm:resched:confirm:{appt_id}")],
         [InlineKeyboardButton("❌ Отклонить перенос", callback_data=f"adm:resched:reject:{appt_id}")],
+    ])
+
+def admin_reschedule_dates_kb(dates: list[date]) -> InlineKeyboardMarkup:
+    rows = []
+    for d in dates:
+        rows.append([InlineKeyboardButton(d.strftime("%d.%m (%a)"), callback_data=f"admresched:date:{d.isoformat()}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
+    return InlineKeyboardMarkup(rows)
+
+def admin_reschedule_slots_kb(slots_local: list[datetime]) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for dt in slots_local:
+        row.append(InlineKeyboardButton(dt.strftime("%H:%M"), callback_data=f"admresched:slot:{dt.isoformat()}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admresched:back:dates")])
+    return InlineKeyboardMarkup(rows)
+
+def admin_reschedule_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Подтвердить перенос", callback_data="admresched:send")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="admresched:back:dates")],
     ])
 
 def reminder_kb(appt_id: int) -> InlineKeyboardMarkup:
