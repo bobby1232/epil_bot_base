@@ -30,6 +30,7 @@ def admin_menu_kb() -> ReplyKeyboardMarkup:
     kb = [
         ["📅 Записи сегодня", "📅 Записи завтра"],
         ["🧾 Все заявки (Ожидание)"],
+        ["📝 Записать клиента"],
         ["⬅️ В главное меню"],
     ]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
@@ -53,11 +54,26 @@ def services_kb(services: list[Service]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
     return InlineKeyboardMarkup(rows)
 
+def admin_services_kb(services: list[Service]) -> InlineKeyboardMarkup:
+    rows = []
+    for s in services:
+        price = format_price(s.price)
+        rows.append([InlineKeyboardButton(f"{s.name} • {int(s.duration_min)} мин • {price}", callback_data=f"admsvc:{s.id}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
+    return InlineKeyboardMarkup(rows)
+
 def dates_kb(dates: list[date]) -> InlineKeyboardMarkup:
     rows = []
     for d in dates:
         rows.append([InlineKeyboardButton(d.strftime("%d.%m (%a)"), callback_data=f"date:{d.isoformat()}")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:services")])
+    return InlineKeyboardMarkup(rows)
+
+def admin_dates_kb(dates: list[date]) -> InlineKeyboardMarkup:
+    rows = []
+    for d in dates:
+        rows.append([InlineKeyboardButton(d.strftime("%d.%m (%a)"), callback_data=f"admdate:{d.isoformat()}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admback:services")])
     return InlineKeyboardMarkup(rows)
 
 def slots_kb(slots_local: list[datetime]) -> InlineKeyboardMarkup:

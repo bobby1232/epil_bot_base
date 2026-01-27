@@ -182,30 +182,27 @@ def _advisory_key_for_slot(start_utc: datetime, service_id: int) -> int:
     key = int.from_bytes(h[:8], byteorder="big", signed=False)
     return key & ((1 << 63) - 1)
 
-async def create_hold_appointment(
+async def _ensure_slot_available(
     session: AsyncSession,
-    settings: SettingsView,
-    client: User,
-    service: Service,
-    start_local: datetime,
-    comment: str | None,
-) -> Appointment:
-    now_utc = datetime.now(tz=pytz.UTC)
-    start_utc = _to_utc(start_local, settings.tz)
-    end_local = compute_slot_end(start_local, service, settings)
-    end_utc = _to_utc(end_local, settings.tz)
-
-    lock_key = _advisory_key_for_slot(start_utc, service.id)
+    start_utc: datetime,
+    end_utc: datetime,
+    service_id: int,
+    *,
+    exclude_appt_id: int | None = None,
+) -> None:
+    lock_key = _advisory_key_for_slot(start_utc, service_id)
     await session.execute(text("SELECT pg_advisory_xact_lock(:k)").bindparams(k=lock_key))
 
+    overlap_filters = [
+        Appointment.start_dt < end_utc,
+        Appointment.end_dt > start_utc,
+        Appointment.status.in_([AppointmentStatus.Hold, AppointmentStatus.Booked]),
+    ]
+    if exclude_appt_id is not None:
+        overlap_filters.append(Appointment.id != exclude_appt_id)
+
     overlap = await session.execute(
-        select(Appointment.id).where(
-            and_(
-                Appointment.start_dt < end_utc,
-                Appointment.end_dt > start_utc,
-                Appointment.status.in_([AppointmentStatus.Hold, AppointmentStatus.Booked])
-            )
-        ).limit(1)
+        select(Appointment.id).where(and_(*overlap_filters)).limit(1)
     )
     if overlap.first():
         raise ValueError("SLOT_TAKEN")
@@ -220,6 +217,21 @@ async def create_hold_appointment(
     )
     if block_overlap.first():
         raise ValueError("SLOT_BLOCKED")
+
+async def create_hold_appointment(
+    session: AsyncSession,
+    settings: SettingsView,
+    client: User,
+    service: Service,
+    start_local: datetime,
+    comment: str | None,
+) -> Appointment:
+    now_utc = datetime.now(tz=pytz.UTC)
+    start_utc = _to_utc(start_local, settings.tz)
+    end_local = compute_slot_end(start_local, service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+
+    await _ensure_slot_available(session, start_utc, end_utc, service.id)
 
     appt = Appointment(
         client_user_id=client.id,
@@ -240,6 +252,56 @@ async def create_hold_appointment(
     session.add(appt)
     await session.flush()
     return appt
+
+async def create_admin_appointment(
+    session: AsyncSession,
+    settings: SettingsView,
+    client: User,
+    service: Service,
+    start_local: datetime,
+    *,
+    price_override: float | None = None,
+    client_comment: str | None = None,
+    admin_comment: str | None = None,
+) -> Appointment:
+    now_utc = datetime.now(tz=pytz.UTC)
+    start_utc = _to_utc(start_local, settings.tz)
+    end_local = compute_slot_end(start_local, service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+
+    await _ensure_slot_available(session, start_utc, end_utc, service.id)
+
+    appt = Appointment(
+        client_user_id=client.id,
+        service_id=service.id,
+        start_dt=start_utc,
+        end_dt=end_utc,
+        status=AppointmentStatus.Booked,
+        hold_expires_at=None,
+        client_comment=client_comment,
+        admin_comment=admin_comment,
+        price_override=price_override,
+        proposed_alt_start_dt=None,
+        reminder_24h_sent=False,
+        reminder_2h_sent=False,
+        visit_confirmed=False,
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+    session.add(appt)
+    await session.flush()
+    return appt
+
+async def check_slot_available(
+    session: AsyncSession,
+    settings: SettingsView,
+    service: Service,
+    start_local: datetime,
+) -> None:
+    start_utc = _to_utc(start_local, settings.tz)
+    end_local = compute_slot_end(start_local, service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+    await _ensure_slot_available(session, start_utc, end_utc, service.id)
 
 async def request_reschedule(
     session: AsyncSession,
