@@ -105,6 +105,15 @@ def compute_slot_end(start_local: datetime, service: Service, settings: Settings
     total_min = int(service.duration_min) + int(service.buffer_min) + int(settings.buffer_min)
     return start_local + timedelta(minutes=total_min)
 
+def compute_slot_end_for_duration(
+    start_local: datetime,
+    duration_min: int,
+    service: Service,
+    settings: SettingsView,
+) -> datetime:
+    total_min = int(duration_min) + int(service.buffer_min) + int(settings.buffer_min)
+    return start_local + timedelta(minutes=total_min)
+
 async def list_available_dates(session: AsyncSession, settings: SettingsView) -> list[date]:
     now_local = _to_tz(datetime.now(tz=pytz.UTC), settings.tz)
     start_date = now_local.date()
@@ -122,6 +131,15 @@ async def list_available_slots_for_service(
     settings: SettingsView,
     service: Service,
     day: date,
+) -> list[datetime]:
+    return await list_available_slots_for_duration(session, settings, service, day, int(service.duration_min))
+
+async def list_available_slots_for_duration(
+    session: AsyncSession,
+    settings: SettingsView,
+    service: Service,
+    day: date,
+    duration_min: int,
 ) -> list[datetime]:
     now_local = _to_tz(datetime.now(tz=pytz.UTC), settings.tz)
     earliest_local = now_local + timedelta(minutes=settings.min_lead_time_min)
@@ -166,7 +184,7 @@ async def list_available_slots_for_service(
 
     while cursor < work_end_local:
         if cursor >= earliest_local:
-            end_local = compute_slot_end(cursor, service, settings)
+            end_local = compute_slot_end_for_duration(cursor, duration_min, service, settings)
             if end_local <= work_end_local:
                 s_utc = _to_utc(cursor, settings.tz)
                 e_utc = _to_utc(end_local, settings.tz)
@@ -292,6 +310,46 @@ async def create_admin_appointment(
     await session.flush()
     return appt
 
+async def create_admin_appointment_with_duration(
+    session: AsyncSession,
+    settings: SettingsView,
+    client: User,
+    service: Service,
+    start_local: datetime,
+    *,
+    duration_min: int,
+    price_override: float | None = None,
+    client_comment: str | None = None,
+    admin_comment: str | None = None,
+) -> Appointment:
+    now_utc = datetime.now(tz=pytz.UTC)
+    start_utc = _to_utc(start_local, settings.tz)
+    end_local = compute_slot_end_for_duration(start_local, duration_min, service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+
+    await _ensure_slot_available(session, start_utc, end_utc, service.id)
+
+    appt = Appointment(
+        client_user_id=client.id,
+        service_id=service.id,
+        start_dt=start_utc,
+        end_dt=end_utc,
+        status=AppointmentStatus.Booked,
+        hold_expires_at=None,
+        client_comment=client_comment,
+        admin_comment=admin_comment,
+        price_override=price_override,
+        proposed_alt_start_dt=None,
+        reminder_24h_sent=False,
+        reminder_2h_sent=False,
+        visit_confirmed=False,
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+    session.add(appt)
+    await session.flush()
+    return appt
+
 async def check_slot_available(
     session: AsyncSession,
     settings: SettingsView,
@@ -300,6 +358,18 @@ async def check_slot_available(
 ) -> None:
     start_utc = _to_utc(start_local, settings.tz)
     end_local = compute_slot_end(start_local, service, settings)
+    end_utc = _to_utc(end_local, settings.tz)
+    await _ensure_slot_available(session, start_utc, end_utc, service.id)
+
+async def check_slot_available_for_duration(
+    session: AsyncSession,
+    settings: SettingsView,
+    service: Service,
+    start_local: datetime,
+    duration_min: int,
+) -> None:
+    start_utc = _to_utc(start_local, settings.tz)
+    end_local = compute_slot_end_for_duration(start_local, duration_min, service, settings)
     end_utc = _to_utc(end_local, settings.tz)
     await _ensure_slot_available(session, start_utc, end_utc, service.id)
 
