@@ -76,6 +76,19 @@ def admin_dates_kb(dates: list[date]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admback:services")])
     return InlineKeyboardMarkup(rows)
 
+def admin_slots_kb(slots_local: list[datetime]) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for dt in slots_local:
+        row.append(InlineKeyboardButton(dt.strftime("%H:%M"), callback_data=f"admtime:{dt.isoformat()}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admback:dates")])
+    return InlineKeyboardMarkup(rows)
+
 def slots_kb(slots_local: list[datetime]) -> InlineKeyboardMarkup:
     rows = []
     row = []
