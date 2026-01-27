@@ -14,13 +14,15 @@ STATUS_RU = {
 def status_ru(v: str) -> str:
     return STATUS_RU.get(v, v)
 
-def main_menu_kb() -> ReplyKeyboardMarkup:
+def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
     kb = [
         ["Записаться", "Цены и услуги"],
         ["Адрес / Контакты", "Мои записи"],
         ["История"],
         ["Задать вопрос"],
     ]
+    if is_admin:
+        kb.append(["Админ-меню"])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:

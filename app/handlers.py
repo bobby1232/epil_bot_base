@@ -27,6 +27,12 @@ K_COMMENT = "comment"
 def is_admin(cfg: Config, user_id: int) -> bool:
     return user_id == cfg.admin_telegram_id
 
+def main_menu_for(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config | None = context.bot_data.get("cfg")
+    if cfg and update.effective_user:
+        return main_menu_kb(is_admin(cfg, update.effective_user.id))
+    return main_menu_kb()
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
     session_factory = context.bot_data["session_factory"]
@@ -35,7 +41,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await upsert_user(s, update.effective_user.id, update.effective_user.username, update.effective_user.full_name)
     await update.message.reply_text(
         "Привет! Я помогу записаться на эпиляцию. Выбирай действие в меню 👇",
-        reply_markup=main_menu_kb()
+        reply_markup=main_menu_for(update, context)
     )
     if is_admin(cfg, update.effective_user.id):
         await update.message.reply_text("Админ-панель 👇", reply_markup=admin_menu_kb())
@@ -74,32 +80,35 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if txt == "🧾 Все заявки (Ожидание)":
             return await admin_holds_view(update, context)
         if txt == "⬅️ В главное меню":
-            await update.message.reply_text("Главное меню 👇", reply_markup=main_menu_kb())
+            await update.message.reply_text("Главное меню 👇", reply_markup=main_menu_for(update, context))
+            return
+        if txt == "Админ-меню":
+            await update.message.reply_text("Админ-панель 👇", reply_markup=admin_menu_kb())
             return
 
-    await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_kb())
+    await update.message.reply_text("Используй кнопки меню 👇", reply_markup=main_menu_for(update, context))
 
 async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
         services = await list_active_services(s)
     if not services:
-        await update.message.reply_text("Пока нет услуг. Напиши мастеру.", reply_markup=main_menu_kb())
+        await update.message.reply_text("Пока нет услуг. Напиши мастеру.", reply_markup=main_menu_for(update, context))
         return
     lines = ["Прайс-лист:"]
     for sv in services:
         lines.append(f"• {sv.name}: {sv.price} / {int(sv.duration_min)} мин")
-    await update.message.reply_text("\n".join(lines), reply_markup=main_menu_kb())
+    await update.message.reply_text("\n".join(lines), reply_markup=main_menu_for(update, context))
 
 async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Адрес / Контакты:\n— (заполни текстом позже)\n"
         "Если нужно — нажми «Задать вопрос».",
-        reply_markup=main_menu_kb()
+        reply_markup=main_menu_for(update, context)
     )
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Напиши вопрос одним сообщением — я перешлю мастеру.", reply_markup=main_menu_kb())
+    await update.message.reply_text("Напиши вопрос одним сообщением — я перешлю мастеру.", reply_markup=main_menu_for(update, context))
     context.user_data["awaiting_question"] = True
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,14 +122,14 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=cfg.admin_telegram_id,
         text=f"❓ Вопрос от клиента:\nИмя: {user.full_name}\n@{user.username}\nTG ID: {user.id}\n\n{q}"
     )
-    await update.message.reply_text("Отправлено ✅ Мастер ответит вам в Telegram.", reply_markup=main_menu_kb())
+    await update.message.reply_text("Отправлено ✅ Мастер ответит вам в Telegram.", reply_markup=main_menu_for(update, context))
 
 async def flow_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
         services = await list_active_services(s)
     if not services:
-        await update.message.reply_text("Услуги пока не настроены. Напишите мастеру.", reply_markup=main_menu_kb())
+        await update.message.reply_text("Услуги пока не настроены. Напишите мастеру.", reply_markup=main_menu_for(update, context))
         return
     await update.message.reply_text("Выбери услугу:", reply_markup=services_kb(services))
 
@@ -157,7 +166,7 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await admin_action_msg(update, context, appt_id)
 
     if data == "back:main":
-        await query.message.reply_text("Главное меню 👇", reply_markup=main_menu_kb())
+        await query.message.reply_text("Главное меню 👇", reply_markup=main_menu_for(update, context))
         return
 
     if data == "back:services":
@@ -318,7 +327,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prefix = "Телефон сохранён ✅\n" if phone else ""
             await msg.reply_text(
                 f"{prefix}Но я не вижу выбранную услугу/время. Начни запись заново: /start → «Записаться».",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_for(update, context),
             )
             return
 
@@ -332,7 +341,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prefix = "Телефон сохранён ✅\n" if phone else ""
             await msg.reply_text(
                 f"{prefix}Выбранная услуга недоступна. Начни запись заново: /start → «Записаться».",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_for(update, context),
             )
             return
 
@@ -353,15 +362,15 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if code == "SLOT_TAKEN":
                 await msg.reply_text(
                     "Этот слот уже заняли. Пожалуйста выбери другое время: /start → «Записаться».",
-                    reply_markup=main_menu_kb(),
+                    reply_markup=main_menu_for(update, context),
                 )
             elif code == "SLOT_BLOCKED":
                 await msg.reply_text(
                     "Это время заблокировано. Пожалуйста выбери другое: /start → «Записаться».",
-                    reply_markup=main_menu_kb(),
+                    reply_markup=main_menu_for(update, context),
                 )
             else:
-                await msg.reply_text("Не удалось создать запись. Попробуй ещё раз: /start", reply_markup=main_menu_kb())
+                await msg.reply_text("Не удалось создать запись. Попробуй ещё раз: /start", reply_markup=main_menu_for(update, context))
             return
 
     # 4) флоу завершён: снимаем флаг и чистим временные поля
@@ -377,7 +386,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дата/время: {local_dt.strftime('%d.%m %H:%M')}\n"
         "Статус: Ожидает подтверждения\n"
         "Ожидай подтверждения мастера.",
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_for(update, context),
     )
 
     # 6) уведомляем админа с кнопками
@@ -460,7 +469,7 @@ async def show_my_appointments(update: Update, context: ContextTypes.DEFAULT_TYP
     async with session_factory() as s:
         appts = await get_user_appointments(s, update.effective_user.id, limit=10)
     if not appts:
-        await update.message.reply_text("У вас пока нет записей.", reply_markup=main_menu_kb())
+        await update.message.reply_text("У вас пока нет записей.", reply_markup=main_menu_for(update, context))
         return
     await update.message.reply_text("Ваши записи:", reply_markup=my_appts_kb(appts))
 
@@ -480,7 +489,7 @@ async def show_my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = await get_settings(s, cfg.timezone)
         appts = await get_user_appointments_history(s, update.effective_user.id, limit=10)
     if not appts:
-        await update.message.reply_text("История пустая.", reply_markup=main_menu_kb())
+        await update.message.reply_text("История пустая.", reply_markup=main_menu_for(update, context))
         return
     await update.message.reply_text("История:", reply_markup=my_appts_kb(appts))
 
@@ -616,10 +625,11 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
 
     lines = [f"📅 Записи на {day.strftime('%d.%m')}:" ]
     for a in appts:
-        t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
+        start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
+        end_t = a.end_dt.astimezone(settings.tz).strftime("%H:%M")
         client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
         phone = a.client.phone or "—"
-        lines.append(f"• {t} | #{a.id} | {a.status.value} | {a.service.name} | {client} | {phone}")
+        lines.append(f"• {start_t}–{end_t} | #{a.id} | {a.status.value} | {a.service.name} | {client} | {phone}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
 
