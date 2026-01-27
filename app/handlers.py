@@ -41,6 +41,7 @@ K_ADMIN_CLIENT_NAME = "admin_client_name"
 K_ADMIN_CLIENT_PHONE = "admin_client_phone"
 K_ADMIN_CLIENT_TGID = "admin_client_tg_id"
 K_ADMIN_PRICE = "admin_price_override"
+K_ADMIN_TIME_ERRORS = "admin_time_errors"
 
 def is_admin(cfg: Config, user_id: int) -> bool:
     return user_id == cfg.admin_telegram_id
@@ -60,6 +61,7 @@ def _clear_admin_booking(context: ContextTypes.DEFAULT_TYPE) -> None:
         K_ADMIN_CLIENT_PHONE,
         K_ADMIN_CLIENT_TGID,
         K_ADMIN_PRICE,
+        K_ADMIN_TIME_ERRORS,
     ):
         context.user_data.pop(key, None)
     for flag in (
@@ -79,6 +81,11 @@ def _normalize_phone(value: str) -> str:
 
 def _generate_offline_tg_id() -> int:
     return -int(datetime.now(tz=pytz.UTC).timestamp() * 1_000_000)
+
+def _increment_admin_time_errors(context: ContextTypes.DEFAULT_TYPE) -> int:
+    errors = int(context.user_data.get(K_ADMIN_TIME_ERRORS, 0)) + 1
+    context.user_data[K_ADMIN_TIME_ERRORS] = errors
+    return errors
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
@@ -569,6 +576,16 @@ async def handle_admin_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _clear_admin_booking(context)
         return await update.message.reply_text("Сессия сброшена. Начни заново.", reply_markup=admin_menu_kb())
 
+    async def _maybe_abort_after_errors() -> bool:
+        if _increment_admin_time_errors(context) >= 3:
+            _clear_admin_booking(context)
+            await update.message.reply_text(
+                "Слишком много ошибок. Процесс записи сброшен.",
+                reply_markup=main_menu_for(update, context),
+            )
+            return True
+        return False
+
     try:
         hh, mm = txt.split(":")
         hh_i = int(hh)
@@ -576,6 +593,8 @@ async def handle_admin_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (0 <= hh_i <= 23 and 0 <= mm_i <= 59):
             raise ValueError
     except ValueError:
+        if await _maybe_abort_after_errors():
+            return
         return await update.message.reply_text("Неверный формат времени. Введи HH:MM, например 14:30.")
 
     day = date.fromisoformat(day_iso)
@@ -592,12 +611,16 @@ async def handle_admin_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_local = start_local.replace(hour=hh_i, minute=mm_i)
         now_local = datetime.now(tz=settings.tz)
         if start_local < now_local:
+            if await _maybe_abort_after_errors():
+                return
             return await update.message.reply_text("Нельзя выбрать время в прошлом. Введи другое время.")
 
         work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
         work_end_local = settings.tz.localize(datetime.combine(day, settings.work_end))
         end_local = compute_slot_end(start_local, service, settings)
         if start_local < work_start_local or end_local > work_end_local:
+            if await _maybe_abort_after_errors():
+                return
             return await update.message.reply_text(
                 f"Время вне рабочего диапазона ({settings.work_start.strftime('%H:%M')}–{settings.work_end.strftime('%H:%M')})."
             )
@@ -607,13 +630,18 @@ async def handle_admin_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError as e:
             code = str(e)
             if code == "SLOT_TAKEN":
+                if await _maybe_abort_after_errors():
+                    return
                 return await update.message.reply_text("Этот слот уже занят. Введи другое время.")
             if code == "SLOT_BLOCKED":
+                if await _maybe_abort_after_errors():
+                    return
                 return await update.message.reply_text("Это время заблокировано. Введи другое время.")
             raise
 
     context.user_data["awaiting_admin_time"] = False
     context.user_data[K_ADMIN_TIME] = start_local.isoformat()
+    context.user_data.pop(K_ADMIN_TIME_ERRORS, None)
     context.user_data["awaiting_admin_client_name"] = True
     await update.message.reply_text("Введи имя клиента.")
 
