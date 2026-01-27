@@ -11,12 +11,14 @@ from app.logic import (
     list_available_slots_for_service, create_hold_appointment, get_user_appointments,
     get_user_appointments_history, get_appointment, admin_confirm, admin_reject,
     cancel_by_client, request_reschedule, confirm_reschedule, reject_reschedule,
-    admin_list_appointments_for_day, admin_list_holds
+    admin_list_appointments_for_day, admin_list_holds, create_admin_appointment,
+    check_slot_available, compute_slot_end
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
     admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb, admin_menu_kb,
-    reschedule_dates_kb, reschedule_slots_kb, reschedule_confirm_kb, admin_reschedule_kb
+    reschedule_dates_kb, reschedule_slots_kb, reschedule_confirm_kb, admin_reschedule_kb,
+    admin_services_kb, admin_dates_kb
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
@@ -29,6 +31,13 @@ K_RESCHED_APPT = "resched_appt_id"
 K_RESCHED_SVC = "resched_svc_id"
 K_RESCHED_DATE = "resched_date"
 K_RESCHED_SLOT = "resched_slot_iso"
+K_ADMIN_SVC = "admin_svc_id"
+K_ADMIN_DATE = "admin_date"
+K_ADMIN_TIME = "admin_time_iso"
+K_ADMIN_CLIENT_NAME = "admin_client_name"
+K_ADMIN_CLIENT_PHONE = "admin_client_phone"
+K_ADMIN_CLIENT_TGID = "admin_client_tg_id"
+K_ADMIN_PRICE = "admin_price_override"
 
 def is_admin(cfg: Config, user_id: int) -> bool:
     return user_id == cfg.admin_telegram_id
@@ -38,6 +47,35 @@ def main_menu_for(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cfg and update.effective_user:
         return main_menu_kb(is_admin(cfg, update.effective_user.id))
     return main_menu_kb()
+
+def _clear_admin_booking(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in (
+        K_ADMIN_SVC,
+        K_ADMIN_DATE,
+        K_ADMIN_TIME,
+        K_ADMIN_CLIENT_NAME,
+        K_ADMIN_CLIENT_PHONE,
+        K_ADMIN_CLIENT_TGID,
+        K_ADMIN_PRICE,
+    ):
+        context.user_data.pop(key, None)
+    for flag in (
+        "awaiting_admin_time",
+        "awaiting_admin_client_name",
+        "awaiting_admin_client_phone",
+        "awaiting_admin_client_tg",
+        "awaiting_admin_price",
+    ):
+        context.user_data.pop(flag, None)
+
+def _normalize_phone(value: str) -> str:
+    phone = (value or "").strip()
+    for ch in [" ", "-", "(", ")", "\u00A0"]:
+        phone = phone.replace(ch, "")
+    return phone
+
+def _generate_offline_tg_id() -> int:
+    return -int(datetime.now(tz=pytz.UTC).timestamp() * 1_000_000)
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
@@ -53,6 +91,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Админ-панель 👇", reply_markup=admin_menu_kb())
 
 async def unified_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_admin_time"):
+        return await handle_admin_time(update, context)
+    if context.user_data.get("awaiting_admin_client_name"):
+        return await handle_admin_client_name(update, context)
+    if context.user_data.get("awaiting_admin_client_phone"):
+        return await handle_admin_client_phone(update, context)
+    if context.user_data.get("awaiting_admin_client_tg"):
+        return await handle_admin_client_tg(update, context)
+    if context.user_data.get("awaiting_admin_price"):
+        return await handle_admin_price(update, context)
     if context.user_data.get("awaiting_question"):
         return await handle_question(update, context)
     if context.user_data.get("awaiting_comment"):
@@ -85,6 +133,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await admin_day_view(update, context, offset_days=1)
         if txt == "🧾 Все заявки (Ожидание)":
             return await admin_holds_view(update, context)
+        if txt == "📝 Записать клиента":
+            return await admin_start_booking(update, context)
         if txt == "⬅️ В главное меню":
             await update.message.reply_text("Главное меню 👇", reply_markup=main_menu_for(update, context))
             return
@@ -139,6 +189,29 @@ async def flow_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("Выбери услугу:", reply_markup=services_kb(services))
 
+async def admin_start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        if update.message:
+            return await update.message.reply_text("Нет доступа.")
+        if update.callback_query:
+            return await update.callback_query.message.edit_text("Нет доступа.")
+        return
+    _clear_admin_booking(context)
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        services = await list_active_services(s)
+    if not services:
+        if update.message:
+            await update.message.reply_text("Услуги пока не настроены.", reply_markup=admin_menu_kb())
+        elif update.callback_query:
+            await update.callback_query.message.edit_text("Услуги пока не настроены.")
+        return
+    if update.message:
+        await update.message.reply_text("Выбери услугу для записи:", reply_markup=admin_services_kb(services))
+    elif update.callback_query:
+        await update.callback_query.message.edit_text("Выбери услугу для записи:", reply_markup=admin_services_kb(services))
+
 async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -148,11 +221,19 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[K_SVC] = int(data.split(":")[1])
         return await flow_dates(update, context)
 
+    if data.startswith("admsvc:"):
+        context.user_data[K_ADMIN_SVC] = int(data.split(":")[1])
+        return await admin_flow_dates(update, context)
+
     if data.startswith("date:"):
         context.user_data[K_DATE] = data.split(":")[1]
         if context.user_data.get(K_RESCHED_APPT):
             return await flow_reschedule_slots(update, context)
         return await flow_slots(update, context)
+
+    if data.startswith("admdate:"):
+        context.user_data[K_ADMIN_DATE] = data.split(":")[1]
+        return await admin_prompt_time(update, context)
 
     if data.startswith("slot:"):
         context.user_data[K_SLOT] = data.split("slot:")[1]
@@ -189,6 +270,9 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back:dates":
         return await flow_dates(update, context)
+
+    if data == "admback:services":
+        return await admin_start_booking(update, context)
 
     if data == "myback:list":
         return await show_my_appointments_from_cb(update, context)
@@ -245,6 +329,20 @@ async def flow_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = await get_settings(s, cfg.timezone)
         dates = await list_available_dates(s, settings)
     await update.callback_query.message.edit_text("Выбери дату:", reply_markup=dates_kb(dates))
+
+async def admin_flow_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session_factory = context.bot_data["session_factory"]
+    cfg: Config = context.bot_data["cfg"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        dates = await list_available_dates(s, settings)
+    await update.callback_query.message.edit_text("Выбери дату для записи:", reply_markup=admin_dates_kb(dates))
+
+async def admin_prompt_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["awaiting_admin_time"] = True
+    await update.callback_query.message.edit_text(
+        "Введи время визита в формате HH:MM (например, 14:30)."
+    )
 
 async def flow_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_factory = context.bot_data["session_factory"]
@@ -449,6 +547,203 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+async def handle_admin_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_admin_time"):
+        return
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        _clear_admin_booking(context)
+        return await update.message.reply_text("Нет доступа.")
+
+    txt = (update.message.text or "").strip().lower()
+    if txt in {"отмена", "cancel", "/cancel"}:
+        _clear_admin_booking(context)
+        return await update.message.reply_text("Запись отменена.", reply_markup=admin_menu_kb())
+
+    svc_id = context.user_data.get(K_ADMIN_SVC)
+    day_iso = context.user_data.get(K_ADMIN_DATE)
+    if not svc_id or not day_iso:
+        _clear_admin_booking(context)
+        return await update.message.reply_text("Сессия сброшена. Начни заново.", reply_markup=admin_menu_kb())
+
+    try:
+        hh, mm = txt.split(":")
+        hh_i = int(hh)
+        mm_i = int(mm)
+        if not (0 <= hh_i <= 23 and 0 <= mm_i <= 59):
+            raise ValueError
+    except ValueError:
+        return await update.message.reply_text("Неверный формат времени. Введи HH:MM, например 14:30.")
+
+    day = date.fromisoformat(day_iso)
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        services = await list_active_services(s)
+        service = next((x for x in services if x.id == int(svc_id)), None)
+        if not service:
+            _clear_admin_booking(context)
+            return await update.message.reply_text("Услуга недоступна.", reply_markup=admin_menu_kb())
+
+        start_local = settings.tz.localize(datetime.combine(day, datetime.min.time()))
+        start_local = start_local.replace(hour=hh_i, minute=mm_i)
+        now_local = datetime.now(tz=settings.tz)
+        if start_local < now_local:
+            return await update.message.reply_text("Нельзя выбрать время в прошлом. Введи другое время.")
+
+        work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
+        work_end_local = settings.tz.localize(datetime.combine(day, settings.work_end))
+        end_local = compute_slot_end(start_local, service, settings)
+        if start_local < work_start_local or end_local > work_end_local:
+            return await update.message.reply_text(
+                f"Время вне рабочего диапазона ({settings.work_start.strftime('%H:%M')}–{settings.work_end.strftime('%H:%M')})."
+            )
+
+        try:
+            await check_slot_available(s, settings, service, start_local)
+        except ValueError as e:
+            code = str(e)
+            if code == "SLOT_TAKEN":
+                return await update.message.reply_text("Этот слот уже занят. Введи другое время.")
+            if code == "SLOT_BLOCKED":
+                return await update.message.reply_text("Это время заблокировано. Введи другое время.")
+            raise
+
+    context.user_data["awaiting_admin_time"] = False
+    context.user_data[K_ADMIN_TIME] = start_local.isoformat()
+    context.user_data["awaiting_admin_client_name"] = True
+    await update.message.reply_text("Введи имя клиента.")
+
+async def handle_admin_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_admin_client_name"):
+        return
+    name = (update.message.text or "").strip()
+    if not name:
+        return await update.message.reply_text("Имя не может быть пустым. Введи имя клиента.")
+    context.user_data["awaiting_admin_client_name"] = False
+    context.user_data[K_ADMIN_CLIENT_NAME] = name
+    context.user_data["awaiting_admin_client_phone"] = True
+    await update.message.reply_text("Введи телефон клиента или «-», если без телефона.")
+
+async def handle_admin_client_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_admin_client_phone"):
+        return
+    txt = (update.message.text or "").strip()
+    phone = None
+    if txt not in {"-", "без телефона"}:
+        cleaned = _normalize_phone(txt)
+        if not cleaned or not any(ch.isdigit() for ch in cleaned):
+            return await update.message.reply_text("Не вижу телефон. Введи номер или «-» для пропуска.")
+        phone = cleaned
+    context.user_data["awaiting_admin_client_phone"] = False
+    context.user_data[K_ADMIN_CLIENT_PHONE] = phone
+    context.user_data["awaiting_admin_client_tg"] = True
+    await update.message.reply_text("Введи Telegram ID клиента или «-», если запись без Telegram.")
+
+async def handle_admin_client_tg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_admin_client_tg"):
+        return
+    txt = (update.message.text or "").strip()
+    tg_id = None
+    if txt not in {"-", "нет", "без", "без telegram", "без телеграм"}:
+        try:
+            tg_id = int(txt)
+        except ValueError:
+            return await update.message.reply_text("Telegram ID должен быть числом. Введи число или «-».")
+    if tg_id is None:
+        tg_id = _generate_offline_tg_id()
+    context.user_data["awaiting_admin_client_tg"] = False
+    context.user_data[K_ADMIN_CLIENT_TGID] = tg_id
+    context.user_data["awaiting_admin_price"] = True
+    await update.message.reply_text("Введи цену услуги или «-», чтобы оставить стандартную.")
+
+async def handle_admin_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_admin_price"):
+        return
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        _clear_admin_booking(context)
+        return await update.message.reply_text("Нет доступа.")
+    txt = (update.message.text or "").strip()
+    price_override = None
+    if txt not in {"-", "стандарт", "стандартная"}:
+        try:
+            price_override = float(txt.replace(",", "."))
+        except ValueError:
+            return await update.message.reply_text("Цена должна быть числом. Введи цену или «-».")
+        if price_override < 0:
+            return await update.message.reply_text("Цена не может быть отрицательной. Введи цену или «-».")
+
+    svc_id = context.user_data.get(K_ADMIN_SVC)
+    day_iso = context.user_data.get(K_ADMIN_DATE)
+    time_iso = context.user_data.get(K_ADMIN_TIME)
+    client_name = context.user_data.get(K_ADMIN_CLIENT_NAME)
+    client_phone = context.user_data.get(K_ADMIN_CLIENT_PHONE)
+    client_tg_id = context.user_data.get(K_ADMIN_CLIENT_TGID)
+
+    if not all([svc_id, day_iso, time_iso, client_name, client_tg_id]):
+        _clear_admin_booking(context)
+        return await update.message.reply_text("Сессия сброшена. Начни заново.", reply_markup=admin_menu_kb())
+
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            services = await list_active_services(s)
+            service = next((x for x in services if x.id == int(svc_id)), None)
+            if not service:
+                _clear_admin_booking(context)
+                return await update.message.reply_text("Услуга недоступна.", reply_markup=admin_menu_kb())
+
+            client = await upsert_user(s, client_tg_id, None, client_name)
+            if client_phone:
+                await set_user_phone(s, client_tg_id, client_phone)
+
+            start_local = datetime.fromisoformat(time_iso)
+            try:
+                appt = await create_admin_appointment(
+                    s,
+                    settings=settings,
+                    client=client,
+                    service=service,
+                    start_local=start_local,
+                    price_override=price_override,
+                    admin_comment="Создано мастером",
+                )
+            except ValueError as e:
+                code = str(e)
+                if code == "SLOT_TAKEN":
+                    return await update.message.reply_text("Этот слот уже занят. Начни запись заново.", reply_markup=admin_menu_kb())
+                if code == "SLOT_BLOCKED":
+                    return await update.message.reply_text("Этот слот заблокирован. Начни запись заново.", reply_markup=admin_menu_kb())
+                raise
+
+    _clear_admin_booking(context)
+    price_label = format_price(price_override if price_override is not None else service.price)
+    local_dt = appt.start_dt.astimezone(settings.tz)
+    await update.message.reply_text(
+        "Запись создана ✅\n"
+        f"Клиент: {client_name}\n"
+        f"Услуга: {service.name}\n"
+        f"Дата/время: {local_dt.strftime('%d.%m %H:%M')}\n"
+        f"Цена: {price_label}",
+        reply_markup=admin_menu_kb(),
+    )
+
+    if client_tg_id > 0:
+        try:
+            await context.bot.send_message(
+                chat_id=client_tg_id,
+                text=(
+                    "✅ Мастер записал вас на услугу.\n"
+                    f"{local_dt.strftime('%d.%m %H:%M')}\n"
+                    f"Услуга: {service.name}\n"
+                    f"Цена: {price_label}"
+                )
+            )
+        except Exception:
+            pass
+
 async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
     session_factory = context.bot_data["session_factory"]
@@ -552,11 +847,13 @@ async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAU
         proposed_dt = appt.proposed_alt_start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')
         proposed = f"\nЗапрос на перенос: {proposed_dt} (ожидает подтверждения)"
 
+    price = format_price(appt.price_override if appt.price_override is not None else appt.service.price)
     txt = (
         f"Запись #{appt.id}\n"
         f"Статус: {appt.status.value}\n"
         f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
         f"Услуга: {appt.service.name}\n"
+        f"Цена: {price}\n"
         f"Комментарий: {appt.client_comment or '—'}"
         f"{proposed}"
     )
@@ -843,7 +1140,10 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         end_t = a.end_dt.astimezone(settings.tz).strftime("%H:%M")
         client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
         phone = a.client.phone or "—"
-        lines.append(f"• {start_t}–{end_t} | #{a.id} | {a.status.value} | {a.service.name} | {client} | {phone}")
+        price = format_price(a.price_override if a.price_override is not None else a.service.price)
+        lines.append(
+            f"• {start_t}–{end_t} | #{a.id} | {a.status.value} | {a.service.name} | {price} | {client} | {phone}"
+        )
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
 

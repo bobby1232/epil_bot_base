@@ -69,6 +69,7 @@ class Appointment(Base):
 
     client_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     admin_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_override: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
 
     proposed_alt_start_dt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
