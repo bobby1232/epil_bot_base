@@ -547,7 +547,7 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"✅ Запись подтверждена!\n"
                     f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Услуга: {appt.service.name}\n"
-                    f"Ждём вас 🙂"
+                    f"Адриана ждет Вас!"
                 )
             )
     await update.callback_query.message.edit_text(f"Подтверждено ✅ (#{appt_id})")

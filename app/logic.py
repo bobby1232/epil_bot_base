@@ -347,7 +347,11 @@ async def admin_list_appointments_for_day(session: AsyncSession, tz: pytz.BaseTz
     return (await session.execute(
         select(Appointment)
         .options(selectinload(Appointment.client), selectinload(Appointment.service))
-        .where(and_(Appointment.start_dt >= start_utc, Appointment.start_dt < end_utc))
+        .where(and_(
+            Appointment.start_dt >= start_utc,
+            Appointment.start_dt < end_utc,
+            Appointment.status != AppointmentStatus.Rejected,
+        ))
         .order_by(Appointment.start_dt.asc())
     )).scalars().all()
 
