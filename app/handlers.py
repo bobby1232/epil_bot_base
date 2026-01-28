@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, date, timedelta, time
+import asyncio
 import logging
 import pytz
 
@@ -30,7 +31,7 @@ from app.keyboards import (
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
-from texts import PRECARE_RECOMMENDATIONS
+from texts import PRECARE_RECOMMENDATIONS_PARTS
 
 logger = logging.getLogger(__name__)
 
@@ -1446,9 +1447,14 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Услуга: {appt.service.name}\n"
                     f"Адриана ждет Вас!\n\n"
-                    f"{PRECARE_RECOMMENDATIONS}"
-                )
+                ),
             )
+            await asyncio.sleep(5)
+            for part in PRECARE_RECOMMENDATIONS_PARTS:
+                await context.bot.send_message(
+                    chat_id=appt.client.tg_id,
+                    text=part,
+                )
     await update.callback_query.message.edit_text("Подтверждено ✅")
 
 async def admin_action_reject(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
