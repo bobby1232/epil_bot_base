@@ -5,6 +5,7 @@ import os
 class Config:
     bot_token: str
     admin_telegram_id: int
+    admin_telegram_ids: tuple[int, ...]
     database_url: str
     timezone: str
 
@@ -26,11 +27,27 @@ def _get_int(name: str, default: int) -> int:
     v = os.getenv(name, str(default)).strip()
     return int(v)
 
+def _parse_admin_ids(raw_value: str) -> tuple[int, ...]:
+    raw = (raw_value or "").strip()
+    if not raw:
+        return tuple()
+    parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+    ids: list[int] = []
+    for part in parts:
+        try:
+            value = int(part)
+        except ValueError as exc:
+            raise RuntimeError("ADMIN_TELEGRAM_ID must contain only numeric IDs") from exc
+        if value:
+            ids.append(value)
+    return tuple(ids)
+
 def load_config() -> Config:
     bot_token = os.getenv("BOT_TOKEN", "").strip()
-    admin_id = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
+    admin_raw = os.getenv("ADMIN_TELEGRAM_IDS", "").strip() or os.getenv("ADMIN_TELEGRAM_ID", "").strip()
     db_url = os.getenv("DATABASE_URL", "").strip()
-    if not bot_token or not admin_id or not db_url:
+    admin_ids = _parse_admin_ids(admin_raw)
+    if not bot_token or not admin_ids or not db_url:
         raise RuntimeError("Missing BOT_TOKEN / ADMIN_TELEGRAM_ID / DATABASE_URL")
 
     webhook_url = os.getenv("WEBHOOK_URL", "").strip() or None
@@ -38,7 +55,8 @@ def load_config() -> Config:
 
     return Config(
         bot_token=bot_token,
-        admin_telegram_id=int(admin_id),
+        admin_telegram_id=admin_ids[0],
+        admin_telegram_ids=admin_ids,
         database_url=db_url,
         timezone=os.getenv("TIMEZONE", "Europe/Amsterdam").strip(),
 

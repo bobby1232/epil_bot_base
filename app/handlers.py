@@ -60,8 +60,33 @@ K_BREAK_DATE = "break_date"
 K_BREAK_DURATION = "break_duration_min"
 K_BREAK_TIME_ERRORS = "break_time_errors"
 
+def admin_ids(cfg: Config) -> tuple[int, ...]:
+    ids = getattr(cfg, "admin_telegram_ids", None)
+    if ids:
+        return tuple(ids)
+    admin_id = getattr(cfg, "admin_telegram_id", None)
+    if admin_id:
+        return (int(admin_id),)
+    return tuple()
+
 def is_admin(cfg: Config, user_id: int) -> bool:
-    return user_id == cfg.admin_telegram_id
+    return user_id in admin_ids(cfg)
+
+async def notify_admins(
+    context: ContextTypes.DEFAULT_TYPE,
+    cfg: Config,
+    text: str,
+    reply_markup=None,
+) -> None:
+    for admin_id in admin_ids(cfg):
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+        except Exception:
+            logger.exception("Failed to notify admin %s", admin_id)
 
 def main_menu_for(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config | None = context.bot_data.get("cfg")
@@ -239,9 +264,13 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_question"] = False
     q = update.message.text.strip()
     user = update.effective_user
-    await context.bot.send_message(
-        chat_id=cfg.admin_telegram_id,
-        text=f"❓ Вопрос от клиента:\nИмя: {user.full_name}\n@{user.username}\nTG ID: {user.id}\n\n{q}"
+    await notify_admins(
+        context,
+        cfg,
+        text=(
+            "❓ Вопрос от клиента:\n"
+            f"Имя: {user.full_name}\n@{user.username}\nTG ID: {user.id}\n\n{q}"
+        ),
     )
     await update.message.reply_text("Отправлено ✅ Мастер ответит вам в Telegram.", reply_markup=main_menu_for(update, context))
 
@@ -713,27 +742,24 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # 6) уведомляем админа с кнопками
-    try:
-        admin_id = int(cfg.admin_telegram_id)
-        client_name = (
-            update.effective_user.full_name
-            or (f"@{update.effective_user.username}" if update.effective_user.username else str(update.effective_user.id))
-        )
-        await context.bot.send_message(
-            chat_id=admin_id,
-            text=(
-                "🆕 Новая заявка (ожидает подтверждения)\n"
-                f"#{appt.id}\n"
-                f"{service.name}\n"
-                f"{local_dt.strftime('%d.%m %H:%M')}\n"
-                f"Клиент: {client_name}\n"
-                f"Телефон: {phone or '—'}\n"
-                f"Комментарий: {comment or '—'}"
-            ),
-            reply_markup=admin_request_kb(appt.id),
-        )
-    except Exception:
-        pass
+    client_name = (
+        update.effective_user.full_name
+        or (f"@{update.effective_user.username}" if update.effective_user.username else str(update.effective_user.id))
+    )
+    await notify_admins(
+        context,
+        cfg,
+        text=(
+            "🆕 Новая заявка (ожидает подтверждения)\n"
+            f"#{appt.id}\n"
+            f"{service.name}\n"
+            f"{local_dt.strftime('%d.%m %H:%M')}\n"
+            f"Клиент: {client_name}\n"
+            f"Телефон: {phone or '—'}\n"
+            f"Комментарий: {comment or '—'}"
+        ),
+        reply_markup=admin_request_kb(appt.id),
+    )
 
 async def handle_admin_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_admin_duration"):
@@ -1017,7 +1043,7 @@ async def _finalize_break(message, context: ContextTypes.DEFAULT_TYPE, start_loc
                     settings,
                     start_local,
                     duration_min,
-                    created_by_admin=int(cfg.admin_telegram_id),
+                    created_by_admin=message.from_user.id if message.from_user else admin_ids(cfg)[0],
                 )
             except ValueError as e:
                 code = str(e)
@@ -1207,8 +1233,9 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return await update.callback_query.message.edit_text("Этот слот заблокирован. Выбери другое время.")
                 raise
 
-            await context.bot.send_message(
-                chat_id=cfg.admin_telegram_id,
+            await notify_admins(
+                context,
+                cfg,
                 text=(
                     f"🆕 Новая заявка (HOLD #{appt.id})\n"
                     f"Услуга: {service.name}\n"
@@ -1220,7 +1247,7 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Комментарий: {context.user_data.get(K_COMMENT) or '—'}\n\n"
                     f"Hold истекает: {appt.hold_expires_at.astimezone(settings.tz).strftime('%H:%M')}"
                 ),
-                reply_markup=admin_request_kb(appt.id)
+                reply_markup=admin_request_kb(appt.id),
             )
 
     for k in (K_SVC, K_DATE, K_SLOT, K_COMMENT):
@@ -1306,9 +1333,13 @@ async def client_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, appt
                 return await update.callback_query.message.edit_text(
                     f"Отмена недоступна менее чем за {settings.cancel_limit_hours} часов. Напишите мастеру напрямую."
                 )
-            await context.bot.send_message(
-                chat_id=cfg.admin_telegram_id,
-                text=f"🚫 Клиент отменил запись #{appt.id} на {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}"
+            await notify_admins(
+                context,
+                cfg,
+                text=(
+                    "🚫 Клиент отменил запись "
+                    f"#{appt.id} на {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}"
+                ),
             )
     await update.callback_query.message.edit_text("Запись отменена ✅")
 
@@ -1407,8 +1438,9 @@ async def finalize_reschedule_request(update: Update, context: ContextTypes.DEFA
             new_local = appt.proposed_alt_start_dt.astimezone(settings.tz)
             old_local = appt.start_dt.astimezone(settings.tz)
 
-            await context.bot.send_message(
-                chat_id=cfg.admin_telegram_id,
+            await notify_admins(
+                context,
+                cfg,
                 text=(
                     "🔄 Запрос на перенос записи\n"
                     f"#{appt.id}\n"

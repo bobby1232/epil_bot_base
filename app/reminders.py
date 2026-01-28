@@ -201,8 +201,8 @@ async def send_daily_admin_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
     if session_factory is None or cfg is None:
         return
 
-    admin_id = getattr(cfg, "admin_telegram_id", None)
-    if not admin_id:
+    admin_ids = getattr(cfg, "admin_telegram_ids", None)
+    if not admin_ids:
         return
 
     tz_name = app.bot_data.get("tz", "Europe/Moscow")
@@ -255,7 +255,8 @@ async def send_daily_admin_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         text = "\n".join(lines)
 
-    try:
-        await context.bot.send_message(chat_id=admin_id, text=text)
-    except Exception:
-        return
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=text)
+        except Exception:
+            continue
