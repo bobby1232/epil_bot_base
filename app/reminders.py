@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Appointment, AppointmentStatus, User, Service
 from app.utils import format_price
-from texts import AFTERCARE_RECOMMENDATIONS
+from texts import AFTERCARE_RECOMMENDATIONS_HEADER, AFTERCARE_RECOMMENDATION_ITEMS
 
 
 
@@ -177,8 +177,13 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             try:
                 await context.bot.send_message(
                     chat_id=appt.client.tg_id,
-                    text=AFTERCARE_RECOMMENDATIONS,
+                    text=AFTERCARE_RECOMMENDATIONS_HEADER,
                 )
+                for item in AFTERCARE_RECOMMENDATION_ITEMS:
+                    await context.bot.send_message(
+                        chat_id=appt.client.tg_id,
+                        text=item,
+                    )
                 await session.execute(
                     update(Appointment)
                     .where(Appointment.id == appt.id)

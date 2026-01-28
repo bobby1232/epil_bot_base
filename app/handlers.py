@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from datetime import datetime, date, timedelta, time
 import logging
 import pytz
@@ -30,7 +31,7 @@ from app.keyboards import (
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
-from texts import PRECARE_RECOMMENDATIONS
+from texts import PRECARE_RECOMMENDATIONS_HEADER, PRECARE_RECOMMENDATION_ITEMS
 
 logger = logging.getLogger(__name__)
 
@@ -1449,6 +1450,17 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"{PRECARE_RECOMMENDATIONS}"
                 )
             )
+            await asyncio.sleep(5)
+            await context.bot.send_message(
+                chat_id=appt.client.tg_id,
+                text=PRECARE_RECOMMENDATIONS_HEADER,
+            )
+            for item in PRECARE_RECOMMENDATION_ITEMS:
+                await asyncio.sleep(5)
+                await context.bot.send_message(
+                    chat_id=appt.client.tg_id,
+                    text=item,
+                )
     await update.callback_query.message.edit_text("Подтверждено ✅")
 
 async def admin_action_reject(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
