@@ -52,6 +52,6 @@ def load_config() -> Config:
         hold_ttl_min=_get_int("HOLD_TTL_MIN", 720),
         cancel_limit_hours=_get_int("CANCEL_LIMIT_HOURS", 2),
         work_start=os.getenv("WORK_START", "09:00").strip(),
-        work_end=os.getenv("WORK_END", "20:30").strip(),
+        work_end=os.getenv("WORK_END", "20:45").strip(),
         work_days=os.getenv("WORK_DAYS", "0,1,2,3,4,5").strip(),  # 0=Mon
     )

@@ -1,4 +1,6 @@
+from datetime import time as dt_time
 from dotenv import load_dotenv
+import pytz
 from sqlalchemy import select, text
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
@@ -8,7 +10,7 @@ from app.models import Base, Setting
 from app.logic import seed_defaults_if_needed, ensure_default_services
 from app.handlers import cmd_start, cb_router, handle_contact, unified_text_router
 from app.scheduler import tick
-from app.reminders import check_and_send_reminders  # booking reminders
+from app.reminders import check_and_send_reminders, send_daily_admin_schedule  # booking reminders
 import logging
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,9 @@ def main():
         app.job_queue.run_repeating(tick_job, interval=60, first=10)
         # reminders: booking reminders (checked every 60s)
         app.job_queue.run_repeating(check_and_send_reminders, interval=60, first=20)
+        tz_name = app.bot_data.get("tz", "Europe/Moscow")
+        tz = pytz.timezone(tz_name)
+        app.job_queue.run_daily(send_daily_admin_schedule, time=dt_time(hour=8, minute=0, tzinfo=tz))
 
     # LOCAL: polling if webhook not configured
     if cfg.webhook_url:
