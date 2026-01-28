@@ -710,3 +710,46 @@ async def admin_list_holds(session: AsyncSession) -> list[Appointment]:
         .where(Appointment.status == AppointmentStatus.Hold)
         .order_by(Appointment.hold_expires_at.asc())
     )).scalars().all()
+
+async def admin_list_booked_range(
+    session: AsyncSession,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[Appointment]:
+    return (await session.execute(
+        select(Appointment)
+        .options(selectinload(Appointment.client), selectinload(Appointment.service))
+        .where(
+            and_(
+                Appointment.start_dt >= start_utc,
+                Appointment.start_dt < end_utc,
+                Appointment.status == AppointmentStatus.Booked,
+            )
+        )
+        .order_by(Appointment.start_dt.asc())
+    )).scalars().all()
+
+async def list_future_breaks(
+    session: AsyncSession,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[BlockedInterval]:
+    return (await session.execute(
+        select(BlockedInterval)
+        .where(
+            and_(
+                BlockedInterval.end_dt >= start_utc,
+                BlockedInterval.start_dt < end_utc,
+            )
+        )
+        .order_by(BlockedInterval.start_dt.asc())
+    )).scalars().all()
+
+async def delete_blocked_interval(session: AsyncSession, block_id: int) -> bool:
+    block = (await session.execute(
+        select(BlockedInterval).where(BlockedInterval.id == block_id)
+    )).scalar_one_or_none()
+    if not block:
+        return False
+    await session.delete(block)
+    return True

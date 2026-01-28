@@ -17,7 +17,8 @@ from app.logic import (
     create_admin_appointment_with_duration, check_slot_available,
     check_slot_available_for_duration, compute_slot_end, compute_slot_end_for_duration,
     admin_cancel_appointment, list_available_break_slots, create_blocked_interval,
-    admin_reschedule_appointment
+    admin_reschedule_appointment, admin_list_booked_range, list_future_breaks,
+    delete_blocked_interval
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
@@ -25,7 +26,7 @@ from app.keyboards import (
     reschedule_dates_kb, reschedule_slots_kb, reschedule_confirm_kb, admin_reschedule_kb,
     admin_services_kb, admin_dates_kb, admin_slots_kb, admin_manage_appt_kb,
     admin_reschedule_dates_kb, admin_reschedule_slots_kb, admin_reschedule_confirm_kb,
-    break_dates_kb, break_slots_kb
+    break_dates_kb, break_slots_kb, status_ru, RU_WEEKDAYS, cancel_breaks_kb
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
@@ -180,10 +181,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await admin_day_view(update, context, offset_days=1)
         if txt == "🧾 Все заявки (Ожидание)":
             return await admin_holds_view(update, context)
+        if txt == "🗓 Все заявки":
+            return await admin_booked_month_view(update, context)
         if txt == "📝 Записать клиента":
             return await admin_start_booking(update, context)
         if txt == "⏸ Перерыв":
             return await admin_start_break(update, context)
+        if txt == "🗑 Отменить перерыв":
+            return await admin_cancel_break_view(update, context)
         if txt == "⬅️ В главное меню":
             await update.message.reply_text("Главное меню 👇", reply_markup=main_menu_for(update, context))
             return
@@ -207,8 +212,17 @@ async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Адрес / Контакты:\n— (заполни текстом позже)\n"
-        "Если нужно — нажми «Задать вопрос».",
+        "Адрес / Контакты:\n"
+        "🚇 Метро Шипиловская, рядом с домом\n"
+        "Салатовая ветка (10)\n"
+        "Выход 3\n"
+        "Первый вагон из центра\n"
+        "Мусы Джалиля 30 к1, квартира 123\n"
+        "2 подъезд, домофон 123в (работает!)\n"
+        "🛗 15 этаж\n"
+        "Звонок не работает\n"
+        "🥼 Твой мастер депиляции, Адриана\n"
+        "📞 89855055381",
         reply_markup=main_menu_for(update, context)
     )
 
@@ -329,6 +343,10 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("breaktime:"):
         slot_iso = data.split(":", 1)[1]
         return await admin_pick_break_time(update, context, slot_iso)
+
+    if data.startswith("breakcancel:"):
+        block_id = int(data.split(":", 1)[1])
+        return await admin_cancel_break(update, context, block_id)
 
     if data == "back:main":
         await query.message.reply_text("Главное меню 👇", reply_markup=main_menu_for(update, context))
@@ -559,7 +577,6 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Теперь отправь телефон кнопкой 👇\n"
-        "Или нажми «Пропустить телефон», если не хочешь оставлять номер.\n"
         "Если кнопки нет — нажми /start и снова «Записаться».",
         reply_markup=phone_request_kb()
     )
@@ -582,22 +599,17 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1) достаём телефон: контакт или текст (или пропуск)
     phone = None
-    skip_phone = False
     if msg.contact and msg.contact.phone_number:
         phone = msg.contact.phone_number
     else:
         txt = (msg.text or "").strip()
-        normalized = txt.lower()
-        if normalized in {"-", "пропустить", "пропустить телефон", "без телефона", "⏭️ пропустить телефон"}:
-            skip_phone = True
-        else:
-            ok = all(ch.isdigit() or ch in "+-() " for ch in txt) and any(ch.isdigit() for ch in txt)
-            if ok:
-                phone = txt
+        ok = all(ch.isdigit() or ch in "+-() " for ch in txt) and any(ch.isdigit() for ch in txt)
+        if ok:
+            phone = txt
 
-    if not phone and not skip_phone:
+    if not phone:
         await msg.reply_text(
-            "Не вижу номер телефона. Нажми кнопку «Отправить телефон» или «Пропустить телефон» 👇"
+            "Не вижу номер телефона. Нажми кнопку «Отправить телефон» 👇"
         )
         return
 
@@ -633,7 +645,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not svc_id or not slot_iso:
             context.user_data["awaiting_phone"] = False
             await s.commit()
-            prefix = "Телефон сохранён ✅\n" if phone else ""
+            prefix = "Телефон сохранён ✅\n"
             await msg.reply_text(
                 f"{prefix}Но я не вижу выбранную услугу/время. Начни запись заново: /start → «Записаться».",
                 reply_markup=main_menu_for(update, context),
@@ -647,7 +659,7 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not service:
             context.user_data["awaiting_phone"] = False
             await s.commit()
-            prefix = "Телефон сохранён ✅\n" if phone else ""
+            prefix = "Телефон сохранён ✅\n"
             await msg.reply_text(
                 f"{prefix}Выбранная услуга недоступна. Начни запись заново: /start → «Записаться».",
                 reply_markup=main_menu_for(update, context),
@@ -1269,8 +1281,8 @@ async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAU
 
     price = format_price(appt.price_override if appt.price_override is not None else appt.service.price)
     txt = (
-        f"Запись #{appt.id}\n"
-        f"Статус: {appt.status.value}\n"
+        "Запись\n"
+        f"Статус: {status_ru(appt.status.value)}\n"
         f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
         f"Услуга: {appt.service.name}\n"
         f"Цена: {price}\n"
@@ -1435,7 +1447,7 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"Адриана ждет Вас!"
                 )
             )
-    await update.callback_query.message.edit_text(f"Подтверждено ✅ (#{appt_id})")
+    await update.callback_query.message.edit_text("Подтверждено ✅")
 
 async def admin_action_reject(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
@@ -1457,7 +1469,7 @@ async def admin_action_reject(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"Попробуйте выбрать другое время."
                 )
             )
-    await update.callback_query.message.edit_text(f"Отклонено ❌ (#{appt_id})")
+    await update.callback_query.message.edit_text("Отклонено ❌")
 
 def _is_admin_created(appt) -> bool:
     return (appt.admin_comment or "").strip().lower() == "создано мастером"
@@ -1492,7 +1504,7 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_
                     )
                 except Exception:
                     pass
-    await update.callback_query.message.edit_text(f"Запись #{appt_id} отменена ✅")
+    await update.callback_query.message.edit_text("Запись отменена ✅")
 
 async def admin_start_reschedule(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
@@ -1619,7 +1631,7 @@ async def admin_finalize_reschedule(update: Update, context: ContextTypes.DEFAUL
                     pass
 
     _clear_admin_reschedule(context)
-    await update.callback_query.message.edit_text(f"Запись перенесена ✅ (#{appt_id})")
+    await update.callback_query.message.edit_text("Запись перенесена ✅")
 
 async def admin_reschedule_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
@@ -1652,7 +1664,7 @@ async def admin_reschedule_confirm(update: Update, context: ContextTypes.DEFAULT
                     f"Услуга: {appt.service.name}"
                 )
             )
-    await update.callback_query.message.edit_text(f"Перенос подтверждён ✅ (#{appt_id})")
+    await update.callback_query.message.edit_text("Перенос подтверждён ✅")
 
 async def admin_reschedule_reject(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
@@ -1673,7 +1685,7 @@ async def admin_reschedule_reject(update: Update, context: ContextTypes.DEFAULT_
                     "Запись остаётся в исходное время."
                 )
             )
-    await update.callback_query.message.edit_text(f"Перенос отклонён ❌ (#{appt_id})")
+    await update.callback_query.message.edit_text("Перенос отклонён ❌")
 
 async def admin_action_msg(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
@@ -1716,7 +1728,7 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
             reply_markup=admin_menu_kb()
         )
 
-    lines = [f"📅 Записи на {day.strftime('%d.%m')}:" ]
+    lines = [f"📅 Записи на {day.strftime('%d.%m')} ({RU_WEEKDAYS[day.weekday()]}):" ]
     for a in appts:
         start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
         end_t = a.end_dt.astimezone(settings.tz).strftime("%H:%M")
@@ -1724,7 +1736,7 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         phone = a.client.phone or "—"
         price = format_price(a.price_override if a.price_override is not None else a.service.price)
         lines.append(
-            f"• {start_t}–{end_t} | #{a.id} | {a.status.value} | {a.service.name} | {price} | {client} | {phone}"
+            f"• {start_t}–{end_t} | {status_ru(a.status.value)} | {a.service.name} | {price} | {client} | {phone}"
         )
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
@@ -1732,9 +1744,86 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         if a.status == AppointmentStatus.Booked and _is_admin_created(a):
             start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
             await update.message.reply_text(
-                f"Запись #{a.id} • {start_t} • {a.service.name}",
+                f"Запись • {start_t} • {a.service.name}",
                 reply_markup=admin_manage_appt_kb(a.id),
             )
+
+async def admin_booked_month_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        return await update.message.reply_text("Нет доступа.")
+
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        now_local = datetime.now(tz=settings.tz)
+        end_local = now_local + timedelta(days=30)
+        appts = await admin_list_booked_range(
+            s,
+            now_local.astimezone(pytz.UTC),
+            end_local.astimezone(pytz.UTC),
+        )
+
+    if not appts:
+        return await update.message.reply_text(
+            "На ближайший месяц подтверждённых записей нет.",
+            reply_markup=admin_menu_kb()
+        )
+
+    lines = ["🗓 Все подтверждённые записи на месяц вперёд:"]
+    for a in appts:
+        local_dt = a.start_dt.astimezone(settings.tz)
+        end_dt = a.end_dt.astimezone(settings.tz)
+        day_label = f"{local_dt.strftime('%d.%m')} ({RU_WEEKDAYS[local_dt.weekday()]})"
+        client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
+        phone = a.client.phone or "—"
+        price = format_price(a.price_override if a.price_override is not None else a.service.price)
+        lines.append(
+            f"• {day_label} {local_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')} | {a.service.name} | {price} | {client} | {phone}"
+        )
+
+    await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
+
+async def admin_cancel_break_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        return await update.message.reply_text("Нет доступа.")
+
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        now_local = datetime.now(tz=settings.tz)
+        end_local = now_local + timedelta(days=30)
+        blocks = await list_future_breaks(
+            s,
+            now_local.astimezone(pytz.UTC),
+            end_local.astimezone(pytz.UTC),
+        )
+
+    if not blocks:
+        return await update.message.reply_text("Перерывы не найдены.", reply_markup=admin_menu_kb())
+
+    items = [(b.id, b.start_dt.astimezone(settings.tz)) for b in blocks]
+    await update.message.reply_text(
+        "Выберите перерыв для отмены:",
+        reply_markup=cancel_breaks_kb(items),
+    )
+
+async def admin_cancel_break(update: Update, context: ContextTypes.DEFAULT_TYPE, block_id: int):
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        return await update.callback_query.message.edit_text("Нет доступа.")
+
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        async with s.begin():
+            ok = await delete_blocked_interval(s, block_id)
+
+    if not ok:
+        return await update.callback_query.message.edit_text("Перерыв уже отменён или не найден.")
+
+    await update.callback_query.message.edit_text("Перерыв отменён ✅")
+    await update.callback_query.message.reply_text("Админ-панель 👇", reply_markup=admin_menu_kb())
 
 
 async def admin_holds_view(update: Update, context: ContextTypes.DEFAULT_TYPE):

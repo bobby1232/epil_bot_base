@@ -34,9 +34,10 @@ def main_menu_kb(is_admin: bool = False) -> ReplyKeyboardMarkup:
 def admin_menu_kb() -> ReplyKeyboardMarkup:
     kb = [
         ["📅 Записи сегодня", "📅 Записи завтра"],
-        ["🧾 Все заявки (Ожидание)"],
+        ["🧾 Все заявки (Ожидание)", "🗓 Все заявки"],
         ["📝 Записать клиента"],
         ["⏸ Перерыв"],
+        ["🗑 Отменить перерыв"],
         ["⬅️ В главное меню"],
     ]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
@@ -45,7 +46,6 @@ def phone_request_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("📞 Отправить телефон", request_contact=True)],
-            ["⏭️ Пропустить телефон"],
             ["⬅️ Назад"],
         ],
         resize_keyboard=True,
@@ -153,7 +153,7 @@ def my_appts_kb(appts: list[Appointment], tz=None) -> InlineKeyboardMarkup:
         dt = a.start_dt.astimezone(tz) if tz else a.start_dt.astimezone()
         rows.append([
             InlineKeyboardButton(
-                f"#{a.id} • {dt.strftime('%d.%m %H:%M')} • {status_ru(a.status.value)}",
+                f"{dt.strftime('%d.%m %H:%M')} • {status_ru(a.status.value)}",
                 callback_data=f"my:{a.id}",
             )
         ])
@@ -230,3 +230,12 @@ def reminder_kb(appt_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✅ Подтвердить визит", callback_data=f"r:confirm:{appt_id}")],
         [InlineKeyboardButton("🚫 Отменить", callback_data=f"r:cancel:{appt_id}")],
     ])
+
+def cancel_breaks_kb(blocks: list[tuple[int, datetime]]) -> InlineKeyboardMarkup:
+    rows = []
+    for block_id, start_local in blocks:
+        weekday = RU_WEEKDAYS[start_local.weekday()]
+        label = f"{start_local.strftime('%d.%m')} ({weekday}) {start_local.strftime('%H:%M')}"
+        rows.append([InlineKeyboardButton(f"🗑 Отменить {label}", callback_data=f"breakcancel:{block_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
+    return InlineKeyboardMarkup(rows)
