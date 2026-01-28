@@ -231,11 +231,18 @@ def reminder_kb(appt_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🚫 Отменить", callback_data=f"r:cancel:{appt_id}")],
     ])
 
-def cancel_breaks_kb(blocks: list[tuple[int, datetime]]) -> InlineKeyboardMarkup:
+def cancel_breaks_kb(blocks: list[tuple[int, datetime, datetime]]) -> InlineKeyboardMarkup:
     rows = []
-    for block_id, start_local in blocks:
+    for block_id, start_local, end_local in blocks:
         weekday = RU_WEEKDAYS[start_local.weekday()]
-        label = f"{start_local.strftime('%d.%m')} ({weekday}) {start_local.strftime('%H:%M')}"
+        date_label = f"{start_local.strftime('%d.%m')} ({weekday})"
+        if start_local.date() == end_local.date():
+            time_label = f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
+        else:
+            time_label = (
+                f"{start_local.strftime('%H:%M')}–{end_local.strftime('%d.%m %H:%M')}"
+            )
+        label = f"{date_label} {time_label}"
         rows.append([InlineKeyboardButton(f"🗑 Отменить {label}", callback_data=f"breakcancel:{block_id}")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
     return InlineKeyboardMarkup(rows)

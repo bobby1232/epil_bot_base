@@ -1803,7 +1803,10 @@ async def admin_cancel_break_view(update: Update, context: ContextTypes.DEFAULT_
     if not blocks:
         return await update.message.reply_text("Перерывы не найдены.", reply_markup=admin_menu_kb())
 
-    items = [(b.id, b.start_dt.astimezone(settings.tz)) for b in blocks]
+    items = [
+        (b.id, b.start_dt.astimezone(settings.tz), b.end_dt.astimezone(settings.tz))
+        for b in blocks
+    ]
     await update.message.reply_text(
         "Выберите перерыв для отмены:",
         reply_markup=cancel_breaks_kb(items),
