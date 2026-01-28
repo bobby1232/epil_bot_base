@@ -18,6 +18,19 @@ SVC, DAY, TIME, COMMENT, PHONE, FINAL = range(6)
 RU_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
+def _slots_rows(slots: List[datetime]) -> List[List[InlineKeyboardButton]]:
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+    for st in slots:
+        row.append(InlineKeyboardButton(st.strftime("%H:%M"), callback_data=f"time:{st.isoformat()}"))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
 def _tz(context: ContextTypes.DEFAULT_TYPE) -> pytz.BaseTzInfo:
     # ✅ Не падаем KeyError, если tz не задан
     tz_name = context.bot_data.get("tz", "Europe/Moscow")
@@ -205,7 +218,7 @@ async def pick_day_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await query.edit_message_text("На эту дату свободных слотов нет. Выберите другую дату.")
         return DAY
 
-    rows = [[InlineKeyboardButton(st.strftime("%H:%M"), callback_data=f"time:{st.isoformat()}")] for st in slots[:40]]
+    rows = _slots_rows(slots[:40])
     rows.append([InlineKeyboardButton("↩️ Назад к дате", callback_data="time:back")])
 
     await query.edit_message_text("Выберите время:", reply_markup=InlineKeyboardMarkup(rows))
@@ -241,7 +254,7 @@ async def pick_time_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await query.edit_message_text("На эту дату свободных слотов нет. Выберите другую дату.")
             return DAY
 
-        rows = [[InlineKeyboardButton(st.strftime("%H:%M"), callback_data=f"time:{st.isoformat()}")] for st in slots[:40]]
+        rows = _slots_rows(slots[:40])
         rows.append([InlineKeyboardButton("↩️ Назад к дате", callback_data="time:back")])
 
         await query.edit_message_text("Выберите время:", reply_markup=InlineKeyboardMarkup(rows))
