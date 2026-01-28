@@ -14,7 +14,7 @@ class Defaults:
     MIN_LEAD_TIME_MIN = 120
     BOOKING_HORIZON_DAYS = 30
 
-    HOLD_TTL_MIN = 30
+    HOLD_TTL_MIN = 720
     CANCEL_LIMIT_HOURS = 12
 
     REMINDER_24H = True

@@ -49,7 +49,7 @@ def load_config() -> Config:
         buffer_min=_get_int("BUFFER_MIN", 10),
         min_lead_time_min=_get_int("MIN_LEAD_TIME_MIN", 120),
         booking_horizon_days=_get_int("BOOKING_HORIZON_DAYS", 30),
-        hold_ttl_min=_get_int("HOLD_TTL_MIN", 1),
+        hold_ttl_min=_get_int("HOLD_TTL_MIN", 720),
         cancel_limit_hours=_get_int("CANCEL_LIMIT_HOURS", 2),
         work_start=os.getenv("WORK_START", "09:00").strip(),
         work_end=os.getenv("WORK_END", "20:30").strip(),
