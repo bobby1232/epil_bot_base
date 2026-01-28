@@ -30,6 +30,7 @@ from app.keyboards import (
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
+from texts import PRECARE_RECOMMENDATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -1444,7 +1445,8 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"✅ Запись подтверждена!\n"
                     f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Услуга: {appt.service.name}\n"
-                    f"Адриана ждет Вас!"
+                    f"Адриана ждет Вас!\n\n"
+                    f"{PRECARE_RECOMMENDATIONS}"
                 )
             )
     await update.callback_query.message.edit_text("Подтверждено ✅")

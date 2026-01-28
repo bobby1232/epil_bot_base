@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Appointment, AppointmentStatus, User, Service
 from app.utils import format_price
+from texts import AFTERCARE_RECOMMENDATIONS
 
 
 
@@ -152,6 +153,36 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                     update(Appointment)
                     .where(Appointment.id == appt.id)
                     .values(reminder_2h_sent=True, updated_at=_utcnow())
+                )
+            except Exception:
+                continue
+
+        await session.commit()
+
+    # После commit можно отправить пост-уходовые рекомендации
+    async with session_factory() as session:
+        q_aftercare = (
+            select(Appointment)
+            .options(selectinload(Appointment.client), selectinload(Appointment.service))
+            .where(Appointment.status == AppointmentStatus.Booked)
+            .where(Appointment.end_dt <= now)
+        )
+        res_aftercare = await session.execute(q_aftercare)
+        appts_aftercare = list(res_aftercare.scalars().all())
+
+        for appt in appts_aftercare:
+            if not appt.client or not appt.client.tg_id:
+                continue
+
+            try:
+                await context.bot.send_message(
+                    chat_id=appt.client.tg_id,
+                    text=AFTERCARE_RECOMMENDATIONS,
+                )
+                await session.execute(
+                    update(Appointment)
+                    .where(Appointment.id == appt.id)
+                    .values(status=AppointmentStatus.Completed, updated_at=_utcnow())
                 )
             except Exception:
                 continue
