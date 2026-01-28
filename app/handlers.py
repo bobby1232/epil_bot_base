@@ -1446,7 +1446,8 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                     f"✅ Запись подтверждена!\n"
                     f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Услуга: {appt.service.name}\n"
-                    f"Адриана ждет Вас!"
+                    f"Адриана ждет Вас!\n\n"
+                    f"{PRECARE_RECOMMENDATIONS}"
                 )
             )
             await asyncio.sleep(5)

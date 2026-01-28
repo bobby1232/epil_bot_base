@@ -44,20 +44,20 @@ async def seed_db(session_factory, cfg):
         async with s.begin():
             await seed_defaults_if_needed(s, defaults=defaults)
             await ensure_default_services(s)
-            setting = (await s.execute(
-                select(Setting).where(Setting.key == "cancel_limit_hours")
-            )).scalar_one_or_none()
-            if setting:
-                setting.value = str(cfg.cancel_limit_hours)
-            else:
-                s.add(Setting(key="cancel_limit_hours", value=str(cfg.cancel_limit_hours)))
-            booking_setting = (await s.execute(
-                select(Setting).where(Setting.key == "booking_horizon_days")
-            )).scalar_one_or_none()
-            if booking_setting:
-                booking_setting.value = str(cfg.booking_horizon_days)
-            else:
-                s.add(Setting(key="booking_horizon_days", value=str(cfg.booking_horizon_days)))
+            for key, value in {
+                "cancel_limit_hours": str(cfg.cancel_limit_hours),
+                "booking_horizon_days": str(cfg.booking_horizon_days),
+                "work_start": cfg.work_start,
+                "work_end": cfg.work_end,
+                "work_days": cfg.work_days,
+            }.items():
+                setting = (await s.execute(
+                    select(Setting).where(Setting.key == key)
+                )).scalar_one_or_none()
+                if setting:
+                    setting.value = value
+                else:
+                    s.add(Setting(key=key, value=value))
 
 
 def main():
