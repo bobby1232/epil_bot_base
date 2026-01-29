@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, date, timedelta, time
+from urllib.parse import quote
 import asyncio
 import logging
 import pytz
@@ -23,15 +24,17 @@ from app.logic import (
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
-    admin_request_kb, my_appts_kb, my_appt_actions_kb, reminder_kb, admin_menu_kb,
+    admin_request_kb, my_appts_kb, my_appt_actions_kb, admin_menu_kb,
     reschedule_dates_kb, reschedule_slots_kb, reschedule_confirm_kb, admin_reschedule_kb,
     admin_services_kb, admin_dates_kb, admin_slots_kb, admin_manage_appt_kb,
     admin_reschedule_dates_kb, admin_reschedule_slots_kb, admin_reschedule_confirm_kb,
-    break_dates_kb, break_slots_kb, status_ru, RU_WEEKDAYS, cancel_breaks_kb
+    break_dates_kb, break_slots_kb, status_ru, RU_WEEKDAYS, cancel_breaks_kb,
+    contacts_kb,
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
 from texts import (
+    CONTACTS,
     PRECARE_RECOMMENDATIONS,
     AFTERCARE_RECOMMENDATIONS,
     PRECARE_RECOMMENDATIONS_PARTS,
@@ -43,6 +46,7 @@ K_SVC = "svc_id"
 K_DATE = "date"
 K_SLOT = "slot_iso"
 K_COMMENT = "comment"
+K_PHONE = "phone"
 K_RESCHED_APPT = "resched_appt_id"
 K_RESCHED_SVC = "resched_svc_id"
 K_RESCHED_DATE = "resched_date"
@@ -63,6 +67,8 @@ K_ADMIN_RESCHED_SLOT = "admin_resched_slot_iso"
 K_BREAK_DATE = "break_date"
 K_BREAK_DURATION = "break_duration_min"
 K_BREAK_TIME_ERRORS = "break_time_errors"
+
+ADDRESS_LINE = "Мусы Джалиля 30 к1, квартира 123"
 
 def admin_ids(cfg: Config) -> tuple[int, ...]:
     ids = getattr(cfg, "admin_telegram_ids", None)
@@ -255,19 +261,18 @@ async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), reply_markup=main_menu_for(update, context))
 
 async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    address_query = quote(ADDRESS_LINE)
+    google_maps_url = f"https://maps.google.com/?q={address_query}"
+    yandex_maps_url = f"https://yandex.ru/maps/?text={address_query}"
     await update.message.reply_text(
-        "Адрес / Контакты:\n"
-        "🚇 Метро Шипиловская, рядом с домом\n"
-        "Салатовая ветка (10)\n"
-        "Выход 3\n"
-        "Первый вагон из центра\n"
-        "Мусы Джалиля 30 к1, квартира 123\n"
-        "2 подъезд, домофон 123в (работает!)\n"
-        "🛗 15 этаж\n"
-        "Звонок не работает\n"
-        "🥼 Твой мастер депиляции, Адриана\n"
-        "📞 89855055381",
-        reply_markup=main_menu_for(update, context)
+        CONTACTS,
+        reply_markup=contacts_kb(google_maps_url=google_maps_url, yandex_maps_url=yandex_maps_url),
+    )
+
+async def send_address_copy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.message.reply_text(
+        f"Адрес для копирования:\n{ADDRESS_LINE}",
+        reply_markup=main_menu_for(update, context),
     )
 
 async def show_precare(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,6 +423,10 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back:dates":
         return await flow_dates(update, context)
 
+    if data == "back:phone":
+        context.user_data.pop(K_PHONE, None)
+        return await prompt_phone(update, context)
+
     if data == "admback:services":
         return await admin_start_booking(update, context)
 
@@ -445,6 +454,10 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("r:cancel:"):
         appt_id = int(data.split(":")[2])
         return await reminder_cancel(update, context, appt_id)
+
+    if data.startswith("r:resched:"):
+        appt_id = int(data.split(":")[2])
+        return await start_reschedule(update, context, appt_id)
 
     if data.startswith("rdate:"):
         context.user_data[K_RESCHED_DATE] = data.split(":")[1]
@@ -481,6 +494,9 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("adm:resched:reject:"):
         appt_id = int(data.split(":")[3])
         return await admin_reschedule_reject(update, context, appt_id)
+
+    if data == "contact:copy":
+        return await send_address_copy(update, context)
 
 async def flow_services_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.callback_query.message
@@ -624,6 +640,14 @@ async def flow_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data["awaiting_comment"] = True
 
+async def prompt_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["awaiting_phone"] = True
+    await update.effective_message.reply_text(
+        "Теперь отправь телефон кнопкой 👇\n"
+        "Если кнопки нет — нажми /start и снова «Записаться».",
+        reply_markup=phone_request_kb(),
+    )
+
 async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_comment"):
         return
@@ -632,20 +656,13 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c = (update.message.text or "").strip()
     context.user_data[K_COMMENT] = None if c == "-" else c
 
-    # Переключаемся в ожидание телефона
-    context.user_data["awaiting_phone"] = True
-
-    await update.message.reply_text(
-        "Теперь отправь телефон кнопкой 👇\n"
-        "Если кнопки нет — нажми /start и снова «Записаться».",
-        reply_markup=phone_request_kb()
-    )
+    await prompt_phone(update, context)
     return
 
 
 async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Получает телефон (через contact или текстом), сохраняет его и создаёт HOLD-заявку.
+    Получает телефон (через contact или текстом), сохраняет его и показывает подтверждение заявки.
 
     ВАЖНО: берём выбранную услугу/слот из тех же ключей user_data, которые заполняются
     на шагах выбора услуги/даты/времени: K_SVC ("svc_id") и K_SLOT ("slot_iso").
@@ -685,12 +702,11 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2) читаем данные флоу (услуга/слот/коммент)
     svc_id = context.user_data.get(K_SVC)
     slot_iso = context.user_data.get(K_SLOT)
-    comment = context.user_data.get(K_COMMENT)
+    context.user_data[K_PHONE] = phone
 
-    # 3) сохраняем телефон (если есть) + создаём заявку
+    # 3) сохраняем телефон (если есть) + собираем сводку
     async with session_factory() as s:
-        # гарантируем пользователя
-        client = await upsert_user(
+        await upsert_user(
             s,
             tg_id=update.effective_user.id,
             username=update.effective_user.username,
@@ -725,69 +741,17 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu_for(update, context),
             )
             return
+        await s.commit()
 
-        try:
-            appt = await create_hold_appointment(
-                s,
-                settings=settings,
-                client=client,
-                service=service,
-                start_local=start_local,
-                comment=comment,
-            )
-            await s.commit()
-        except ValueError as e:
-            await s.rollback()
-            context.user_data["awaiting_phone"] = False
-            code = str(e)
-            if code == "SLOT_TAKEN":
-                await msg.reply_text(
-                    "Этот слот уже заняли. Пожалуйста выбери другое время: /start → «Записаться».",
-                    reply_markup=main_menu_for(update, context),
-                )
-            elif code == "SLOT_BLOCKED":
-                await msg.reply_text(
-                    "Это время заблокировано. Пожалуйста выбери другое: /start → «Записаться».",
-                    reply_markup=main_menu_for(update, context),
-                )
-            else:
-                await msg.reply_text("Не удалось создать запись. Попробуй ещё раз: /start", reply_markup=main_menu_for(update, context))
-            return
-
-    # 4) флоу завершён: снимаем флаг и чистим временные поля
     context.user_data["awaiting_phone"] = False
-    for k in [K_SVC, K_DATE, K_SLOT, K_COMMENT]:
-        context.user_data.pop(k, None)
-
-    # 5) уведомляем клиента
-    local_dt = appt.start_dt.astimezone(settings.tz)
+    price_label = format_price(service.price)
+    local_dt = start_local.astimezone(settings.tz) if start_local.tzinfo else settings.tz.localize(start_local)
     await msg.reply_text(
-        "Заявка отправлена ✅\n"
+        "Проверь, всё ли верно перед отправкой заявки:\n"
         f"Услуга: {service.name}\n"
         f"Дата/время: {local_dt.strftime('%d.%m %H:%M')}\n"
-        "Статус: Ожидает подтверждения\n"
-        "Ожидай подтверждения мастера.",
-        reply_markup=main_menu_for(update, context),
-    )
-
-    # 6) уведомляем админа с кнопками
-    client_name = (
-        update.effective_user.full_name
-        or (f"@{update.effective_user.username}" if update.effective_user.username else str(update.effective_user.id))
-    )
-    await notify_admins(
-        context,
-        cfg,
-        text=(
-            "🆕 Новая заявка (ожидает подтверждения)\n"
-            f"#{appt.id}\n"
-            f"{service.name}\n"
-            f"{local_dt.strftime('%d.%m %H:%M')}\n"
-            f"Клиент: {client_name}\n"
-            f"Телефон: {phone or '—'}\n"
-            f"Комментарий: {comment or '—'}"
-        ),
-        reply_markup=admin_request_kb(appt.id),
+        f"Цена: {price_label}",
+        reply_markup=confirm_request_kb(),
     )
 
 async def handle_admin_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1239,6 +1203,7 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     svc_id = context.user_data.get(K_SVC)
     slot_iso = context.user_data.get(K_SLOT)
+    phone = context.user_data.get(K_PHONE)
     if not svc_id or not slot_iso:
         return await update.callback_query.message.edit_text("Сессия сброшена. Нажми «Записаться» заново.")
 
@@ -1248,6 +1213,8 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with s.begin():
             settings = await get_settings(s, cfg.timezone)
             client = await upsert_user(s, update.effective_user.id, update.effective_user.username, update.effective_user.full_name)
+            if phone:
+                await set_user_phone(s, update.effective_user.id, phone)
             services = await list_active_services(s)
             service = next((x for x in services if x.id == svc_id), None)
             if not service:
@@ -1270,7 +1237,7 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Услуга: {service.name}\n"
                     f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
                     f"Длительность: {int(service.duration_min)} мин (+буфер)\n"
-                    f"Цена: {service.price}\n\n"
+                    f"Цена: {format_price(service.price)}\n\n"
                     f"Клиент: {update.effective_user.full_name} (@{update.effective_user.username})\n"
                     f"Телефон: {client.phone or '—'}\n"
                     f"Комментарий: {context.user_data.get(K_COMMENT) or '—'}\n\n"
@@ -1279,7 +1246,7 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=admin_request_kb(appt.id),
             )
 
-    for k in (K_SVC, K_DATE, K_SLOT, K_COMMENT):
+    for k in (K_SVC, K_DATE, K_SLOT, K_COMMENT, K_PHONE):
         context.user_data.pop(k, None)
 
     await update.callback_query.message.edit_text(
@@ -1553,10 +1520,6 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_
         async with s.begin():
             settings = await get_settings(s, cfg.timezone)
             appt = await get_appointment(s, appt_id)
-            if not _is_admin_created(appt):
-                return await update.callback_query.message.edit_text(
-                    "Отмена доступна только для записей, созданных мастером."
-                )
             ok = await admin_cancel_appointment(s, appt)
             if not ok:
                 return await update.callback_query.message.edit_text("Отменить можно только подтверждённую запись.")
@@ -1810,11 +1773,11 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
     for a in appts:
-        if a.status == AppointmentStatus.Booked and _is_admin_created(a):
+        if a.status == AppointmentStatus.Booked:
             start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
             await update.message.reply_text(
                 f"Запись • {start_t} • {a.service.name}",
-                reply_markup=admin_manage_appt_kb(a.id),
+                reply_markup=admin_manage_appt_kb(a.id, allow_reschedule=_is_admin_created(a)),
             )
 
 async def admin_booked_month_view(update: Update, context: ContextTypes.DEFAULT_TYPE):

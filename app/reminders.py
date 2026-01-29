@@ -7,6 +7,8 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.models import Appointment, AppointmentStatus, User, Service
+from app.logic import get_settings
+from app.keyboards import reminder_kb
 from app.utils import format_price
 from texts import AFTERCARE_RECOMMENDATIONS_PARTS
 
@@ -82,6 +84,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     target_3_to = target_3_from + win
 
     async with session_factory() as session:
+        settings = await get_settings(session, tz_name)
         # --- 48h reminders ---
         q48 = (
             select(Appointment)
@@ -99,6 +102,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                 continue
 
             d, t = _fmt_date(appt.start_dt, tz_name)
+            allow_reschedule = now <= (appt.start_dt - timedelta(hours=settings.cancel_limit_hours))
             text = REMINDER_48H_TEMPLATE.format(
                 service=(appt.service.name if appt.service else "Услуга"),
                 date=d,
@@ -110,6 +114,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                     chat_id=appt.client.tg_id,
                     text=text,
                     parse_mode="Markdown",
+                    reply_markup=reminder_kb(appt.id, allow_reschedule=allow_reschedule),
                 )
                 # помечаем как отправленное
                 await session.execute(
@@ -138,6 +143,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                 continue
 
             d, t = _fmt_date(appt.start_dt, tz_name)
+            allow_reschedule = now <= (appt.start_dt - timedelta(hours=settings.cancel_limit_hours))
             text = REMINDER_3H_TEMPLATE.format(
                 service=(appt.service.name if appt.service else "Услуга"),
                 time=t,
@@ -148,6 +154,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                     chat_id=appt.client.tg_id,
                     text=text,
                     parse_mode="Markdown",
+                    reply_markup=reminder_kb(appt.id, allow_reschedule=allow_reschedule),
                 )
                 await session.execute(
                     update(Appointment)
