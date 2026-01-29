@@ -20,7 +20,7 @@ from app.logic import (
     check_slot_available_for_duration, compute_slot_end, compute_slot_end_for_duration,
     admin_cancel_appointment, list_available_break_slots, create_blocked_interval,
     admin_reschedule_appointment, admin_list_booked_range, list_future_breaks,
-    delete_blocked_interval
+    delete_blocked_interval, SettingsView
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_kb, dates_kb, slots_kb, confirm_request_kb,
@@ -1742,6 +1742,59 @@ async def reminder_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 async def reminder_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     return await client_cancel(update, context, appt_id)
 
+def _slot_status_for_time(
+    slot_start_local: datetime,
+    spans: list[tuple[datetime, datetime, AppointmentStatus]],
+) -> AppointmentStatus | None:
+    has_hold = False
+    for start_local, end_local, status in spans:
+        if start_local <= slot_start_local < end_local:
+            if status == AppointmentStatus.Booked:
+                return AppointmentStatus.Booked
+            if status == AppointmentStatus.Hold:
+                has_hold = True
+    return AppointmentStatus.Hold if has_hold else None
+
+def _build_day_timeline(
+    day: date,
+    settings: SettingsView,
+    appts: list,
+    slots_per_line: int = 6,
+) -> str:
+    work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
+    work_end_local = settings.tz.localize(datetime.combine(day, settings.work_end))
+    step = timedelta(minutes=settings.slot_step_min)
+    spans = [
+        (a.start_dt.astimezone(settings.tz), a.end_dt.astimezone(settings.tz), a.status)
+        for a in appts
+    ]
+
+    def slot_emoji(status: AppointmentStatus | None) -> str:
+        if status == AppointmentStatus.Booked:
+            return "🟩"
+        if status == AppointmentStatus.Hold:
+            return "🟦"
+        return "⬜️"
+
+    slots: list[str] = []
+    cursor = work_start_local
+    while cursor < work_end_local:
+        status = _slot_status_for_time(cursor, spans)
+        slots.append(f"{cursor.strftime('%H:%M')} {slot_emoji(status)}")
+        cursor += step
+
+    lines = ["🧭 График слотов:"]
+    row: list[str] = []
+    for item in slots:
+        row.append(item)
+        if len(row) >= slots_per_line:
+            lines.append("  ".join(row))
+            row = []
+    if row:
+        lines.append("  ".join(row))
+    lines.append("Легенда: ⬜️ свободно • 🟩 подтверждено • 🟦 ожидает подтверждения")
+    return "\n".join(lines)
+
 async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, offset_days: int):
     cfg: Config = context.bot_data["cfg"]
     if not is_admin(cfg, update.effective_user.id):
@@ -1753,24 +1806,22 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         day = (datetime.now(tz=settings.tz) + timedelta(days=offset_days)).date()
         appts = await admin_list_appointments_for_day(s, settings.tz, day)
 
+    lines = [f"📅 Записи на {day.strftime('%d.%m')} ({RU_WEEKDAYS[day.weekday()]}):"]
     if not appts:
-        return await update.message.reply_text(
-            f"На {day.strftime('%d.%m')} записей нет.",
-            reply_markup=admin_menu_kb()
-        )
-
-    lines = [f"📅 Записи на {day.strftime('%d.%m')} ({RU_WEEKDAYS[day.weekday()]}):" ]
-    for a in appts:
-        start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
-        end_t = a.end_dt.astimezone(settings.tz).strftime("%H:%M")
-        client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
-        phone = a.client.phone or "—"
-        price = format_price(a.price_override if a.price_override is not None else a.service.price)
-        lines.append(
-            f"• {start_t}–{end_t} | {status_ru(a.status.value)} | {a.service.name} | {price} | {client} | {phone}"
-        )
+        lines.append("• Записей нет.")
+    else:
+        for a in appts:
+            start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
+            end_t = a.end_dt.astimezone(settings.tz).strftime("%H:%M")
+            client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
+            phone = a.client.phone or "—"
+            price = format_price(a.price_override if a.price_override is not None else a.service.price)
+            lines.append(
+                f"• {start_t}–{end_t} | {status_ru(a.status.value)} | {a.service.name} | {price} | {client} | {phone}"
+            )
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
+    await update.message.reply_text(_build_day_timeline(day, settings, appts), reply_markup=admin_menu_kb())
     for a in appts:
         if a.status == AppointmentStatus.Booked:
             start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
