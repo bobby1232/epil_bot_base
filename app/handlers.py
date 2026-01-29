@@ -31,7 +31,11 @@ from app.keyboards import (
 )
 from app.models import AppointmentStatus
 from app.utils import format_price
-from texts import PRECARE_RECOMMENDATIONS_PARTS
+from texts import (
+    PRECARE_RECOMMENDATIONS,
+    AFTERCARE_RECOMMENDATIONS,
+    PRECARE_RECOMMENDATIONS_PARTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +209,10 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_my_appointments(update, context)
     if txt == "История":
         return await show_my_history(update, context)
+    if txt == "Подготовка к процедуре":
+        return await show_precare(update, context)
+    if txt == "Уход после процедуры":
+        return await show_aftercare(update, context)
     if txt == "Задать вопрос":
         return await ask_question(update, context)
 
@@ -260,6 +268,18 @@ async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🥼 Твой мастер депиляции, Адриана\n"
         "📞 89855055381",
         reply_markup=main_menu_for(update, context)
+    )
+
+async def show_precare(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        PRECARE_RECOMMENDATIONS,
+        reply_markup=main_menu_for(update, context),
+    )
+
+async def show_aftercare(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        AFTERCARE_RECOMMENDATIONS,
+        reply_markup=main_menu_for(update, context),
     )
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
