@@ -1805,6 +1805,13 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         settings = await get_settings(s, cfg.timezone)
         day = (datetime.now(tz=settings.tz) + timedelta(days=offset_days)).date()
         appts = await admin_list_appointments_for_day(s, settings.tz, day)
+        start_local = settings.tz.localize(datetime.combine(day, datetime.min.time()))
+        end_local = start_local + timedelta(days=1)
+        breaks = await list_future_breaks(
+            s,
+            start_local.astimezone(pytz.UTC),
+            end_local.astimezone(pytz.UTC),
+        )
 
     lines = [f"📅 Записи на {day.strftime('%d.%m')} ({RU_WEEKDAYS[day.weekday()]}):"]
     if not appts:
@@ -1819,6 +1826,14 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
             lines.append(
                 f"• {start_t}–{end_t} | {status_ru(a.status.value)} | {a.service.name} | {price} | {client} | {phone}"
             )
+
+    if breaks:
+        lines.append("• Перерывы:")
+        for b in breaks:
+            start_t = b.start_dt.astimezone(settings.tz).strftime("%H:%M")
+            end_t = b.end_dt.astimezone(settings.tz).strftime("%H:%M")
+            reason = b.reason or "Перерыв"
+            lines.append(f"  - {start_t}–{end_t} | {reason}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
     await update.message.reply_text(_build_day_timeline(day, settings, appts), reply_markup=admin_menu_kb())
