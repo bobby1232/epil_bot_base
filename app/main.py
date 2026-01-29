@@ -10,7 +10,13 @@ from app.models import Base, Setting
 from app.logic import seed_defaults_if_needed, ensure_default_services
 from app.handlers import cmd_start, cb_router, handle_contact, unified_text_router
 from app.scheduler import tick
-from app.reminders import check_and_send_reminders, send_daily_admin_schedule  # booking reminders
+from app.reminders import (
+    check_and_send_reminders,
+    send_daily_admin_schedule,
+    send_daily_admin_earnings_report,
+    send_weekly_admin_earnings_report,
+    send_monthly_admin_earnings_report,
+)  # booking reminders
 import logging
 
 logger = logging.getLogger(__name__)
@@ -102,6 +108,9 @@ def main():
         tz_name = app.bot_data.get("tz", "Europe/Moscow")
         tz = pytz.timezone(tz_name)
         app.job_queue.run_daily(send_daily_admin_schedule, time=dt_time(hour=8, minute=0, tzinfo=tz))
+        app.job_queue.run_daily(send_daily_admin_earnings_report, time=dt_time(hour=23, minute=59, tzinfo=tz))
+        app.job_queue.run_daily(send_weekly_admin_earnings_report, time=dt_time(hour=23, minute=59, tzinfo=tz))
+        app.job_queue.run_daily(send_monthly_admin_earnings_report, time=dt_time(hour=23, minute=59, tzinfo=tz))
 
     # LOCAL: polling if webhook not configured
     if cfg.webhook_url:

@@ -262,11 +262,10 @@ async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     address_query = quote(ADDRESS_LINE)
-    google_maps_url = f"https://maps.google.com/?q={address_query}"
     yandex_maps_url = f"https://yandex.ru/maps/?text={address_query}"
     await update.message.reply_text(
         CONTACTS,
-        reply_markup=contacts_kb(google_maps_url=google_maps_url, yandex_maps_url=yandex_maps_url),
+        reply_markup=contacts_kb(yandex_maps_url=yandex_maps_url),
     )
 
 async def send_address_copy(update: Update, context: ContextTypes.DEFAULT_TYPE):
