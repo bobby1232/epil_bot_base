@@ -234,12 +234,9 @@ def reminder_kb(appt_id: int, *, allow_reschedule: bool = False) -> InlineKeyboa
     rows.append([InlineKeyboardButton("🚫 Отменить", callback_data=f"r:cancel:{appt_id}")])
     return InlineKeyboardMarkup(rows)
 
-def contacts_kb(*, google_maps_url: str, yandex_maps_url: str) -> InlineKeyboardMarkup:
+def contacts_kb(*, yandex_maps_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Открыть в Google Maps", url=google_maps_url),
-            InlineKeyboardButton("Открыть в Яндекс.Картах", url=yandex_maps_url),
-        ],
+        [InlineKeyboardButton("Открыть в Яндекс.Картах", url=yandex_maps_url)],
         [InlineKeyboardButton("📋 Скопировать адрес", callback_data="contact:copy")],
     ])
 
