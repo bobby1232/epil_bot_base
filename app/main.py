@@ -108,9 +108,9 @@ def main():
         tz_name = app.bot_data.get("tz", "Europe/Moscow")
         tz = pytz.timezone(tz_name)
         app.job_queue.run_daily(send_daily_admin_schedule, time=dt_time(hour=8, minute=0, tzinfo=tz))
-        app.job_queue.run_daily(send_daily_admin_earnings_report, time=dt_time(hour=23, minute=59, tzinfo=tz))
-        app.job_queue.run_daily(send_weekly_admin_earnings_report, time=dt_time(hour=23, minute=59, tzinfo=tz))
-        app.job_queue.run_daily(send_monthly_admin_earnings_report, time=dt_time(hour=23, minute=59, tzinfo=tz))
+        app.job_queue.run_daily(send_daily_admin_earnings_report, time=dt_time(hour=21, minute=0, tzinfo=tz))
+        app.job_queue.run_daily(send_weekly_admin_earnings_report, time=dt_time(hour=21, minute=0, tzinfo=tz))
+        app.job_queue.run_daily(send_monthly_admin_earnings_report, time=dt_time(hour=21, minute=0, tzinfo=tz))
 
     # LOCAL: polling if webhook not configured
     if cfg.webhook_url:
