@@ -65,7 +65,7 @@ def load_config() -> Config:
 
         slot_step_min=_get_int("SLOT_STEP_MIN", 30),
         buffer_min=_get_int("BUFFER_MIN", 10),
-        min_lead_time_min=_get_int("MIN_LEAD_TIME_MIN", 120),
+        min_lead_time_min=_get_int("MIN_LEAD_TIME_MIN", 0),
         booking_horizon_days=_get_int("BOOKING_HORIZON_DAYS", 30),
         hold_ttl_min=_get_int("HOLD_TTL_MIN", 720),
         cancel_limit_hours=_get_int("CANCEL_LIMIT_HOURS", 2),

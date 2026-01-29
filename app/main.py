@@ -54,6 +54,7 @@ async def seed_db(session_factory, cfg):
                 "cancel_limit_hours": str(cfg.cancel_limit_hours),
                 "booking_horizon_days": str(cfg.booking_horizon_days),
                 "hold_ttl_min": str(cfg.hold_ttl_min),
+                "min_lead_time_min": str(cfg.min_lead_time_min),
                 "work_start": cfg.work_start,
                 "work_end": cfg.work_end,
                 "work_days": cfg.work_days,
