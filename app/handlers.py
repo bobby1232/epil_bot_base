@@ -78,6 +78,7 @@ K_BREAK_DURATION = "break_duration_min"
 K_BREAK_TIME_ERRORS = "break_time_errors"
 K_BREAK_REASON = "break_reason"
 K_BREAK_REPEAT = "break_repeat"
+K_BREAK_CANCEL_IDS = "break_cancel_ids"
 
 ADDRESS_LINE = "Мусы Джалиля 30 к1, квартира 123"
 
@@ -90,6 +91,30 @@ def _collect_selected_services(services: list, selected_ids: list[int]) -> list:
         return []
     selected_set = set(selected_ids)
     return [s for s in services if s.id in selected_set]
+
+def _selected_break_cancel_ids(context: ContextTypes.DEFAULT_TYPE) -> list[int]:
+    raw = context.user_data.get(K_BREAK_CANCEL_IDS) or []
+    return [int(x) for x in raw if isinstance(x, int) or (isinstance(x, str) and x.isdigit())]
+
+async def _load_break_cancel_items(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> tuple[SettingsView, list[tuple[int, datetime, datetime]]]:
+    cfg: Config = context.bot_data["cfg"]
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
+        now_local = datetime.now(tz=settings.tz)
+        end_local = now_local + timedelta(days=30)
+        blocks = await list_future_breaks(
+            s,
+            now_local.astimezone(pytz.UTC),
+            end_local.astimezone(pytz.UTC),
+        )
+    items = [
+        (b.id, b.start_dt.astimezone(settings.tz), b.end_dt.astimezone(settings.tz))
+        for b in blocks
+    ]
+    return settings, items
 
 def _slot_duration_for_services(services: list, base_service) -> int:
     duration_sum = sum(int(s.duration_min) for s in services)
@@ -538,6 +563,60 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[K_BREAK_REPEAT] = repeat
         context.user_data["awaiting_break_repeat"] = False
         return await _send_break_time_prompt(update, context)
+
+    if data.startswith("breakcsel:"):
+        block_id = int(data.split(":", 1)[1])
+        selected = set(_selected_break_cancel_ids(context))
+        if block_id in selected:
+            selected.remove(block_id)
+        else:
+            selected.add(block_id)
+        context.user_data[K_BREAK_CANCEL_IDS] = list(selected)
+        _, items = await _load_break_cancel_items(context)
+        valid_ids = {block_id for block_id, _, _ in items}
+        selected = selected & valid_ids
+        context.user_data[K_BREAK_CANCEL_IDS] = list(selected)
+        if not items:
+            return await query.message.edit_text("Перерывы не найдены.")
+        selected_label = f"Выбрано: {len(selected)}"
+        return await query.message.edit_text(
+            f"Выберите перерывы для отмены.\n{selected_label}",
+            reply_markup=cancel_breaks_kb(items, selected),
+        )
+
+    if data == "breakcclear":
+        context.user_data[K_BREAK_CANCEL_IDS] = []
+        _, items = await _load_break_cancel_items(context)
+        if not items:
+            return await query.message.edit_text("Перерывы не найдены.")
+        return await query.message.edit_text(
+            "Выберите перерывы для отмены.\nВыбрано: 0",
+            reply_markup=cancel_breaks_kb(items, set()),
+        )
+
+    if data == "breakcconfirm":
+        selected = set(_selected_break_cancel_ids(context))
+        if not selected:
+            _, items = await _load_break_cancel_items(context)
+            if not items:
+                return await query.message.edit_text("Перерывы не найдены.")
+            return await query.message.edit_text(
+                "Выберите хотя бы один перерыв.",
+                reply_markup=cancel_breaks_kb(items, set()),
+            )
+        session_factory = context.bot_data["session_factory"]
+        async with session_factory() as s:
+            async with s.begin():
+                deleted = 0
+                for block_id in selected:
+                    if await delete_blocked_interval(s, block_id):
+                        deleted += 1
+        context.user_data[K_BREAK_CANCEL_IDS] = []
+        if deleted == 0:
+            return await query.message.edit_text("Перерывы уже отменены или не найдены.")
+        await query.message.edit_text(f"Отменено перерывов: {deleted} ✅")
+        await query.message.reply_text("Админ-панель 👇", reply_markup=admin_menu_kb())
+        return
 
     if data.startswith("breakcancel:"):
         block_id = int(data.split(":", 1)[1])
@@ -2947,27 +3026,15 @@ async def admin_cancel_break_view(update: Update, context: ContextTypes.DEFAULT_
     if not is_admin(cfg, update.effective_user.id):
         return await update.message.reply_text("Нет доступа.")
 
-    session_factory = context.bot_data["session_factory"]
-    async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        now_local = datetime.now(tz=settings.tz)
-        end_local = now_local + timedelta(days=30)
-        blocks = await list_future_breaks(
-            s,
-            now_local.astimezone(pytz.UTC),
-            end_local.astimezone(pytz.UTC),
-        )
+    context.user_data[K_BREAK_CANCEL_IDS] = []
+    _, items = await _load_break_cancel_items(context)
 
-    if not blocks:
+    if not items:
         return await update.message.reply_text("Перерывы не найдены.", reply_markup=admin_menu_kb())
 
-    items = [
-        (b.id, b.start_dt.astimezone(settings.tz), b.end_dt.astimezone(settings.tz))
-        for b in blocks
-    ]
     await update.message.reply_text(
-        "Выберите перерыв для отмены:",
-        reply_markup=cancel_breaks_kb(items),
+        "Выберите перерывы для отмены.\nВыбрано: 0",
+        reply_markup=cancel_breaks_kb(items, set()),
     )
 
 async def admin_cancel_break(update: Update, context: ContextTypes.DEFAULT_TYPE, block_id: int):

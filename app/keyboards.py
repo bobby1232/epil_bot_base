@@ -276,7 +276,10 @@ def contacts_kb(*, yandex_maps_url: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📋 Скопировать адрес", callback_data="contact:copy")],
     ])
 
-def cancel_breaks_kb(blocks: list[tuple[int, datetime, datetime]]) -> InlineKeyboardMarkup:
+def cancel_breaks_kb(
+    blocks: list[tuple[int, datetime, datetime]],
+    selected_ids: set[int],
+) -> InlineKeyboardMarkup:
     rows = []
     for block_id, start_local, end_local in blocks:
         weekday = RU_WEEKDAYS[start_local.weekday()]
@@ -288,6 +291,16 @@ def cancel_breaks_kb(blocks: list[tuple[int, datetime, datetime]]) -> InlineKeyb
                 f"{start_local.strftime('%H:%M')}–{end_local.strftime('%d.%m %H:%M')}"
             )
         label = f"{date_label} {time_label}"
-        rows.append([InlineKeyboardButton(f"🗑 Отменить {label}", callback_data=f"breakcancel:{block_id}")])
+        marker = "✅ " if block_id in selected_ids else ""
+        rows.append([
+            InlineKeyboardButton(
+                f"{marker}{label}",
+                callback_data=f"breakcsel:{block_id}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton("🗑 Удалить выбранные", callback_data="breakcconfirm"),
+        InlineKeyboardButton("🧹 Сбросить", callback_data="breakcclear"),
+    ])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back:main")])
     return InlineKeyboardMarkup(rows)
