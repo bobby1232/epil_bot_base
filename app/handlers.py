@@ -1,10 +1,13 @@
 from __future__ import annotations
 from datetime import datetime, date, timedelta, time
+from io import BytesIO
 from urllib.parse import quote
 import asyncio
 import logging
+import os
 import pytz
 
+from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -1799,6 +1802,119 @@ def _build_day_timeline(
     lines.append("Легенда: 🟩 свободно • 🟥 подтверждено • 🟨 ожидает подтверждения")
     return "\n".join(lines)
 
+def _pick_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return ImageFont.truetype(path, font_size)
+    return ImageFont.load_default()
+
+def _build_day_timeline_image(
+    day: date,
+    settings: SettingsView,
+    appts: list,
+    slots_per_line: int = 4,
+) -> BytesIO:
+    work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
+    work_end_local = settings.tz.localize(datetime.combine(day, settings.work_end))
+    step = timedelta(minutes=settings.slot_step_min)
+    spans = [
+        (a.start_dt.astimezone(settings.tz), a.end_dt.astimezone(settings.tz), a.status)
+        for a in appts
+    ]
+
+    def slot_color(status: AppointmentStatus | None) -> tuple[int, int, int]:
+        if status == AppointmentStatus.Booked:
+            return (220, 70, 70)
+        if status == AppointmentStatus.Hold:
+            return (246, 191, 64)
+        return (72, 201, 93)
+
+    slots: list[tuple[str, AppointmentStatus | None]] = []
+    cursor = work_start_local
+    while cursor < work_end_local:
+        status = _slot_status_for_time(cursor, spans)
+        slots.append((cursor.strftime("%H:%M"), status))
+        cursor += step
+
+    title_font = _pick_font(28)
+    time_font = _pick_font(24)
+    legend_font = _pick_font(20)
+
+    padding = 28
+    col_gap = 18
+    row_gap = 16
+    square_size = 18
+
+    dummy_img = Image.new("RGB", (10, 10))
+    draw = ImageDraw.Draw(dummy_img)
+    time_width = max((draw.textbbox((0, 0), label, font=time_font)[2] for label, _ in slots), default=0)
+    time_height = max((draw.textbbox((0, 0), label, font=time_font)[3] for label, _ in slots), default=0)
+
+    cell_width = time_width + 10 + square_size
+    cell_height = max(time_height, square_size)
+    rows = (len(slots) + slots_per_line - 1) // slots_per_line
+    grid_width = slots_per_line * cell_width + max(slots_per_line - 1, 0) * col_gap
+    grid_height = rows * cell_height + max(rows - 1, 0) * row_gap
+
+    title_text = f"График слотов • {day.strftime('%d.%m')}"
+    title_height = draw.textbbox((0, 0), title_text, font=title_font)[3]
+
+    legend_labels = [
+        ("Свободно", slot_color(None)),
+        ("Подтверждено", slot_color(AppointmentStatus.Booked)),
+        ("Ожидает подтверждения", slot_color(AppointmentStatus.Hold)),
+    ]
+    legend_text_height = max(
+        (draw.textbbox((0, 0), label, font=legend_font)[3] for label, _ in legend_labels),
+        default=0,
+    )
+    legend_height = legend_text_height + 8
+
+    width = max(grid_width, 360) + padding * 2
+    height = padding + title_height + 20 + grid_height + 24 + legend_height + padding
+    img = Image.new("RGB", (width, height), (29, 24, 40))
+    draw = ImageDraw.Draw(img)
+
+    title_x = padding
+    title_y = padding
+    draw.text((title_x, title_y), title_text, font=title_font, fill=(245, 245, 245))
+
+    grid_start_y = title_y + title_height + 20
+    for idx, (time_label, status) in enumerate(slots):
+        row = idx // slots_per_line
+        col = idx % slots_per_line
+        x = padding + col * (cell_width + col_gap)
+        y = grid_start_y + row * (cell_height + row_gap)
+        draw.text((x, y), time_label, font=time_font, fill=(230, 230, 230))
+        square_x = x + time_width + 10
+        square_y = y + (cell_height - square_size) // 2
+        draw.rounded_rectangle(
+            (square_x, square_y, square_x + square_size, square_y + square_size),
+            radius=4,
+            fill=slot_color(status),
+        )
+
+    legend_y = grid_start_y + grid_height + 24
+    legend_x = padding
+    for label, color in legend_labels:
+        draw.rounded_rectangle(
+            (legend_x, legend_y + 2, legend_x + square_size, legend_y + square_size + 2),
+            radius=4,
+            fill=color,
+        )
+        draw.text((legend_x + square_size + 8, legend_y), label, font=legend_font, fill=(230, 230, 230))
+        legend_x += square_size + 8 + draw.textbbox((0, 0), label, font=legend_font)[2] + 20
+
+    buffer = BytesIO()
+    buffer.name = "timeline.png"
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
 async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, offset_days: int):
     cfg: Config = context.bot_data["cfg"]
     if not is_admin(cfg, update.effective_user.id):
@@ -1840,8 +1956,12 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
             lines.append(f"  - {start_t}–{end_t} | {reason}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
-    timeline = _build_day_timeline(day, settings, appts)
-    await update.message.reply_text(f"<code>{timeline}</code>", reply_markup=admin_menu_kb(), parse_mode="HTML")
+    timeline_image = _build_day_timeline_image(day, settings, appts)
+    await update.message.reply_photo(
+        photo=timeline_image,
+        caption="🧭 График слотов",
+        reply_markup=admin_menu_kb(),
+    )
     for a in appts:
         if a.status == AppointmentStatus.Booked:
             start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
