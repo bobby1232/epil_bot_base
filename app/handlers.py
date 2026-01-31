@@ -1532,7 +1532,12 @@ async def confirm_reschedule_request(update: Update, context: ContextTypes.DEFAU
         settings = await get_settings(s, cfg.timezone)
         appt = await get_appointment(s, appt_id)
 
-    new_dt = datetime.fromisoformat(slot_iso).astimezone(settings.tz).strftime('%d.%m %H:%M')
+    new_start = datetime.fromisoformat(slot_iso)
+    if new_start.tzinfo:
+        new_local = new_start.astimezone(settings.tz)
+    else:
+        new_local = settings.tz.localize(new_start)
+    new_dt = new_local.strftime('%d.%m %H:%M')
     old_dt = appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')
     await update.callback_query.message.edit_text(
         f"Запросить перенос записи?\nТекущее время: {old_dt}\nНовое время: {new_dt}",
@@ -1743,7 +1748,12 @@ async def admin_confirm_reschedule(update: Update, context: ContextTypes.DEFAULT
         settings = await get_settings(s, cfg.timezone)
         appt = await get_appointment(s, appt_id)
 
-    new_dt = datetime.fromisoformat(slot_iso).astimezone(settings.tz).strftime('%d.%m %H:%M')
+    new_start = datetime.fromisoformat(slot_iso)
+    if new_start.tzinfo:
+        new_local = new_start.astimezone(settings.tz)
+    else:
+        new_local = settings.tz.localize(new_start)
+    new_dt = new_local.strftime('%d.%m %H:%M')
     old_dt = appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')
     await update.callback_query.message.edit_text(
         f"Перенести запись?\nТекущее время: {old_dt}\nНовое время: {new_dt}",
