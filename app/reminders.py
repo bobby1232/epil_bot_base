@@ -30,7 +30,7 @@ REMINDER_48H_TEMPLATE = (
     "Будем рады видеть вас 💛"
 )
 
-REMINDER_3H_TEMPLATE = (
+REMINDER_2H_TEMPLATE = (
     "⏰ Скоро встречаемся!\n\n"
     "Ваша запись сегодня:\n"
     "**{service}**\n"
@@ -126,7 +126,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     Запускается JobQueue раз в минуту.
     Шлём:
       - за 48 часов (флаг reminder_24h_sent используем как "первое напоминание")
-      - за 3 часа   (флаг reminder_2h_sent используем как "второе напоминание")
+      - за 2 часа   (флаг reminder_2h_sent используем как "второе напоминание")
     Только для AppointmentStatus.Booked.
     """
     app = context.application
@@ -140,14 +140,14 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Окна под отправку (чтобы не ловить погрешности по минутам)
     # 48 часов: попадаем в окно [48h, 48h+2min)
-    # 3 часа:   попадаем в окно [3h, 3h+2min)
+    # 2 часа:   попадаем в окно [2h, 2h+2min)
     win = timedelta(minutes=2)
 
     target_48_from = now + timedelta(hours=48)
     target_48_to = target_48_from + win
 
-    target_3_from = now + timedelta(hours=3)
-    target_3_to = target_3_from + win
+    target_2_from = now + timedelta(hours=2)
+    target_2_to = target_2_from + win
 
     async with session_factory() as session:
         settings = await get_settings(session, tz_name)
@@ -192,25 +192,25 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
                 # не валим весь джоб из-за 1 ошибки
                 continue
 
-        # --- 3h reminders ---
-        q3 = (
+        # --- 2h reminders ---
+        q2 = (
             select(Appointment)
             .options(selectinload(Appointment.client), selectinload(Appointment.service))
             .where(Appointment.status == AppointmentStatus.Booked)
-            .where(Appointment.reminder_2h_sent.is_(False))   # используем как "3h не отправляли"
-            .where(Appointment.start_dt >= target_3_from)
-            .where(Appointment.start_dt < target_3_to)
+            .where(Appointment.reminder_2h_sent.is_(False))   # используем как "2h не отправляли"
+            .where(Appointment.start_dt >= target_2_from)
+            .where(Appointment.start_dt < target_2_to)
         )
-        res3 = await session.execute(q3)
-        appts3 = list(res3.scalars().all())
+        res2 = await session.execute(q2)
+        appts2 = list(res2.scalars().all())
 
-        for appt in appts3:
+        for appt in appts2:
             if not appt.client or not appt.client.tg_id:
                 continue
 
             d, t = _fmt_date(appt.start_dt, tz_name)
             allow_reschedule = now <= (appt.start_dt - timedelta(hours=settings.cancel_limit_hours))
-            text = REMINDER_3H_TEMPLATE.format(
+            text = REMINDER_2H_TEMPLATE.format(
                 service=appointment_services_label(appt),
                 time=t,
             )
