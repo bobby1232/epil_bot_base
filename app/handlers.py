@@ -2390,6 +2390,149 @@ def _build_week_schedule_image(
     buffer.seek(0)
     return buffer
 
+def _build_single_day_schedule_image(
+    day: date,
+    settings: SettingsView,
+    appts: list,
+) -> BytesIO:
+    style = WEEK_SCHEDULE_STYLE
+    days = [day]
+    work_start_minutes = settings.work_start.hour * 60 + settings.work_start.minute
+    work_end_minutes = settings.work_end.hour * 60 + settings.work_end.minute
+    total_minutes = max(work_end_minutes - work_start_minutes, 60)
+
+    title_font = _pick_font(style["font_sizes"]["title"])
+    header_font = _pick_font(style["font_sizes"]["header"])
+    time_font = _pick_font(style["font_sizes"]["time"])
+    appt_font = _pick_font(style["font_sizes"]["appointment"])
+
+    padding = style["padding"]
+    header_height = style["header_height"]
+    hour_height = style["hour_height"]
+    minute_height = hour_height / 60
+
+    dummy_img = Image.new("RGB", (10, 10))
+    draw = ImageDraw.Draw(dummy_img)
+    time_col_width = draw.textbbox((0, 0), "00:00", font=time_font)[2] + 10
+
+    day_labels = [f"{RU_WEEKDAYS[day.weekday()]} {day.strftime('%d.%m')}"]
+    header_widths = [draw.textbbox((0, 0), label, font=header_font)[2] for label in day_labels]
+    day_col_width = max(220, max(header_widths, default=120) + 24)
+
+    grid_left = padding + time_col_width + 12
+    grid_top = padding + header_height
+    grid_width = day_col_width * len(days)
+    grid_height = int(total_minutes * minute_height)
+
+    title_text = f"Записи на {day.strftime('%d.%m')} ({RU_WEEKDAYS[day.weekday()]})"
+    title_height = draw.textbbox((0, 0), title_text, font=title_font)[3]
+
+    width = grid_left + grid_width + padding
+    height = grid_top + grid_height + padding + title_height
+    img = Image.new("RGB", (width, height), style["background_color"])
+    draw = ImageDraw.Draw(img)
+
+    title_y = padding
+    draw.text((padding, title_y), title_text, font=title_font, fill=style["title_color"])
+
+    header_y = title_y + title_height + 12
+    for idx, label in enumerate(day_labels):
+        x = grid_left + idx * day_col_width + day_col_width / 2
+        label_width = draw.textbbox((0, 0), label, font=header_font)[2]
+        draw.text(
+            (x - label_width / 2, header_y),
+            label,
+            font=header_font,
+            fill=style["header_text_color"],
+        )
+
+    grid_top = header_y + header_height - 6
+
+    for day_idx in range(len(days) + 1):
+        x = grid_left + day_idx * day_col_width
+        draw.line((x, grid_top, x, grid_top + grid_height), fill=style["grid_line_color"], width=1)
+
+    for minute_offset in range(0, total_minutes + 1, 60):
+        y = grid_top + minute_offset * minute_height
+        draw.line((grid_left, y, grid_left + grid_width, y), fill=style["hour_line_color"], width=1)
+        time_minutes = work_start_minutes + minute_offset
+        hour = time_minutes // 60
+        minute = time_minutes % 60
+        label = f"{hour:02d}:{minute:02d}"
+        label_width = draw.textbbox((0, 0), label, font=time_font)[2]
+        draw.text(
+            (grid_left - 12 - label_width, y - 10),
+            label,
+            font=time_font,
+            fill=style["time_text_color"],
+        )
+
+    def appt_colors(status: AppointmentStatus) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        if status == AppointmentStatus.Booked:
+            colors = style["appointment_colors"]["booked"]
+            return colors["fill"], colors["outline"]
+        colors = style["appointment_colors"]["hold"]
+        return colors["fill"], colors["outline"]
+
+    line_height = draw.textbbox((0, 0), "Ag", font=appt_font)[3] + 2
+
+    for appt in appts:
+        local_start = appt.start_dt.astimezone(settings.tz)
+        local_end = appt.end_dt.astimezone(settings.tz)
+        day_offset = (local_start.date() - day).days
+        if day_offset != 0:
+            continue
+        start_min = local_start.hour * 60 + local_start.minute - work_start_minutes
+        end_min = local_end.hour * 60 + local_end.minute - work_start_minutes
+        if end_min <= 0 or start_min >= total_minutes:
+            continue
+        start_min = max(start_min, 0)
+        end_min = min(end_min, total_minutes)
+
+        x0 = grid_left + day_offset * day_col_width + 6
+        x1 = x0 + day_col_width - 12
+        y0 = grid_top + start_min * minute_height + 2
+        y1 = grid_top + end_min * minute_height - 2
+        if y1 - y0 < style["appointment_min_height"]:
+            y1 = y0 + style["appointment_min_height"]
+
+        fill, outline = appt_colors(appt.status)
+        draw.rounded_rectangle(
+            (x0, y0, x1, y1),
+            radius=style["appointment_corner_radius"],
+            fill=fill,
+            outline=outline,
+            width=style["appointment_outline_width"],
+        )
+
+        client_label = appt.client.full_name or (f"@{appt.client.username}" if appt.client.username else str(appt.client.tg_id))
+        service_label = appointment_services_label(appt)
+        max_text_width = int(x1 - x0 - style["appointment_text_padding_x"] * 2)
+        text_lines = _wrap_text_lines(client_label, draw, appt_font, max_text_width)
+        if service_label:
+            text_lines += _wrap_text_lines(service_label, draw, appt_font, max_text_width)
+        max_lines = max(
+            int((y1 - y0 - style["appointment_text_padding_y"] * 2) / line_height),
+            0,
+        )
+        if max_lines:
+            text_lines = text_lines[:max_lines]
+            text_y = y0 + style["appointment_text_padding_y"]
+            for line in text_lines:
+                draw.text(
+                    (x0 + style["appointment_text_padding_x"], text_y),
+                    line,
+                    font=appt_font,
+                    fill=style["appointment_text_color"],
+                )
+                text_y += line_height
+
+    buffer = BytesIO()
+    buffer.name = "day_schedule.png"
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
 async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, offset_days: int):
     cfg: Config = context.bot_data["cfg"]
     if not is_admin(cfg, update.effective_user.id):
@@ -2432,7 +2575,10 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
             lines.append(f"  - {start_t}–{end_t} | {reason}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
-    timeline_image = _build_day_timeline_image(day, settings, appts)
+    if getattr(cfg, "schedule_visualization", 1) == 2:
+        timeline_image = _build_single_day_schedule_image(day, settings, appts)
+    else:
+        timeline_image = _build_day_timeline_image(day, settings, appts)
     await update.message.reply_photo(
         photo=timeline_image,
         caption="🧭 График слотов",

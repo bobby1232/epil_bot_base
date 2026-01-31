@@ -23,6 +23,7 @@
 - Используй WEBHOOK_URL (например https://<your-app>.up.railway.app)
 - PORT обычно задаёт Railway автоматически, но можно оставить 8080
 - DATABASE_URL должен быть вида: postgresql+asyncpg://...
+- SCHEDULE_VISUALIZATION: 1 = стандартный вид слотов, 2 = расписание дня в стиле недельного вида
 
 ## Smoke-test
 1) /start

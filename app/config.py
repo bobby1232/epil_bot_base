@@ -11,6 +11,7 @@ class Config:
 
     webhook_url: str | None
     port: int
+    schedule_visualization: int
 
     # Seed defaults (only used on first DB init)
     slot_step_min: int
@@ -52,6 +53,7 @@ def load_config() -> Config:
 
     webhook_url = os.getenv("WEBHOOK_URL", "").strip() or None
     port = _get_int("PORT", 8080)
+    schedule_visualization = _get_int("SCHEDULE_VISUALIZATION", 1)
 
     return Config(
         bot_token=bot_token,
@@ -62,6 +64,7 @@ def load_config() -> Config:
 
         webhook_url=webhook_url,
         port=port,
+        schedule_visualization=schedule_visualization,
 
         slot_step_min=_get_int("SLOT_STEP_MIN", 30),
         buffer_min=_get_int("BUFFER_MIN", 10),
