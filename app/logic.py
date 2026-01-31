@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import select, text, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import User, Service, Setting, Appointment, AppointmentStatus, BlockedInterval
+from app.models import User, Service, Setting, Appointment, AppointmentStatus, BlockedInterval, BreakRule
 
 @dataclass(frozen=True)
 class SettingsView:
@@ -518,6 +518,99 @@ async def create_blocked_interval(
     )
     session.add(block)
     return block
+
+def _candidate_break_start(rule: BreakRule, day: date, tz: pytz.BaseTzInfo) -> datetime:
+    return tz.localize(datetime.combine(day, rule.start_time))
+
+def _break_rule_due_dates(rule: BreakRule, *, through_day: date, work_days: set[int]) -> list[date]:
+    if rule.repeat == "daily":
+        step = timedelta(days=1)
+    elif rule.repeat == "weekly":
+        step = timedelta(days=7)
+    else:
+        return []
+
+    cursor = rule.start_date
+    if rule.last_generated_date and rule.last_generated_date > cursor:
+        cursor = rule.last_generated_date + step
+
+    dates: list[date] = []
+    while cursor <= through_day:
+        if cursor.weekday() in work_days:
+            dates.append(cursor)
+        cursor += step
+    return dates
+
+async def list_active_break_rules(session: AsyncSession) -> list[BreakRule]:
+    return (await session.execute(
+        select(BreakRule).order_by(BreakRule.id.asc())
+    )).scalars().all()
+
+async def create_break_rule(
+    session: AsyncSession,
+    *,
+    repeat: str,
+    start_local: datetime,
+    duration_min: int,
+    reason: str,
+    created_by_admin: int,
+    last_generated_date: date | None = None,
+) -> BreakRule:
+    now_utc = datetime.now(tz=pytz.UTC)
+    rule = BreakRule(
+        repeat=repeat,
+        start_time=start_local.timetz().replace(tzinfo=None),
+        duration_min=duration_min,
+        reason=reason,
+        weekday=start_local.weekday(),
+        start_date=start_local.date(),
+        last_generated_date=last_generated_date,
+        created_at=now_utc,
+        created_by_admin=created_by_admin,
+    )
+    session.add(rule)
+    return rule
+
+async def generate_breaks_from_rules(
+    session: AsyncSession,
+    settings: SettingsView,
+    *,
+    horizon_days: int,
+) -> tuple[int, int]:
+    now_local = _to_tz(datetime.now(tz=pytz.UTC), settings.tz)
+    through_day = (now_local + timedelta(days=horizon_days)).date()
+    rules = await list_active_break_rules(session)
+    created = 0
+    skipped = 0
+    for rule in rules:
+        if rule.repeat not in {"daily", "weekly"}:
+            continue
+        if rule.repeat == "weekly" and rule.weekday is not None:
+            work_days = settings.work_days | {rule.weekday}
+        else:
+            work_days = settings.work_days
+        candidate_days = _break_rule_due_dates(rule, through_day=through_day, work_days=work_days)
+        for day in candidate_days:
+            start_local = _candidate_break_start(rule, day, settings.tz)
+            try:
+                await create_blocked_interval(
+                    session,
+                    settings,
+                    start_local,
+                    rule.duration_min,
+                    created_by_admin=rule.created_by_admin,
+                    reason=rule.reason or "Перерыв",
+                )
+                created += 1
+            except ValueError as e:
+                code = str(e)
+                if code in {"SLOT_TAKEN", "SLOT_BLOCKED"}:
+                    skipped += 1
+                    continue
+                raise
+        if candidate_days:
+            rule.last_generated_date = candidate_days[-1]
+    return created, skipped
 
 async def request_reschedule(
     session: AsyncSession,

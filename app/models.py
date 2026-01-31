@@ -1,7 +1,7 @@
 import enum
-from datetime import datetime
+from datetime import datetime, date, time
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text,
+    BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, Time,
     UniqueConstraint, Index
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -46,6 +46,20 @@ class BlockedInterval(Base):
     start_dt: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     end_dt: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by_admin: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+class BreakRule(Base):
+    __tablename__ = "break_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repeat: Mapped[str] = mapped_column(String(16), nullable=False)
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    last_generated_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_by_admin: Mapped[int] = mapped_column(BigInteger, nullable=False)
 

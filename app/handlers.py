@@ -24,7 +24,8 @@ from app.logic import (
     check_slot_available_for_duration, compute_slot_end, compute_slot_end_for_duration,
     admin_cancel_appointment, list_available_break_slots, create_blocked_interval,
     admin_reschedule_appointment, admin_list_appointments_range,
-    list_future_breaks, delete_blocked_interval, SettingsView
+    list_future_breaks, delete_blocked_interval, SettingsView,
+    create_break_rule, generate_breaks_from_rules
 )
 from app.keyboards import (
     main_menu_kb, phone_request_kb, services_multi_kb, dates_kb, slots_kb, confirm_request_kb,
@@ -201,6 +202,13 @@ def _increment_admin_time_errors(context: ContextTypes.DEFAULT_TYPE) -> int:
     errors = int(context.user_data.get(K_ADMIN_TIME_ERRORS, 0)) + 1
     context.user_data[K_ADMIN_TIME_ERRORS] = errors
     return errors
+
+async def _sync_break_rules(session, settings: SettingsView) -> None:
+    await generate_breaks_from_rules(
+        session,
+        settings,
+        horizon_days=settings.booking_horizon_days,
+    )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
@@ -635,16 +643,20 @@ async def flow_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_factory = context.bot_data["session_factory"]
     cfg: Config = context.bot_data["cfg"]
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        dates = await list_available_dates(s, settings)
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            dates = await list_available_dates(s, settings)
     await update.callback_query.message.edit_text("Выбери дату:", reply_markup=dates_kb(dates))
 
 async def admin_flow_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_factory = context.bot_data["session_factory"]
     cfg: Config = context.bot_data["cfg"]
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        dates = await list_available_dates(s, settings)
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            dates = await list_available_dates(s, settings)
     await update.callback_query.message.edit_text("Выбери дату для записи:", reply_markup=admin_dates_kb(dates))
 
 async def admin_start_break(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -683,15 +695,17 @@ async def _admin_send_time_prompt(update: Update, context: ContextTypes.DEFAULT_
     day = date.fromisoformat(day_iso)
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        services = await list_active_services(s)
-        service = next((x for x in services if x.id == int(svc_id)), None)
-        if not service:
-            _clear_admin_booking(context)
-            await update.effective_message.reply_text("Услуга недоступна.", reply_markup=admin_menu_kb())
-            return
-        duration_min = int(context.user_data.get(K_ADMIN_DURATION) or service.duration_min)
-        slots = await list_available_slots_for_duration(s, settings, service, day, duration_min)
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            services = await list_active_services(s)
+            service = next((x for x in services if x.id == int(svc_id)), None)
+            if not service:
+                _clear_admin_booking(context)
+                await update.effective_message.reply_text("Услуга недоступна.", reply_markup=admin_menu_kb())
+                return
+            duration_min = int(context.user_data.get(K_ADMIN_DURATION) or service.duration_min)
+            slots = await list_available_slots_for_duration(s, settings, service, day, duration_min)
 
     context.user_data["awaiting_admin_time"] = True
     slots_hint = "Свободных слотов нет."
@@ -748,17 +762,19 @@ async def flow_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day = date.fromisoformat(day_iso)
 
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        services = await list_active_services(s)
-        service = next((x for x in services if x.id == svc_id), None)
-        if not service:
-            return await update.callback_query.message.edit_text("Услуга недоступна.")
-        selected_services = _collect_selected_services(services, _selected_service_ids(context))
-        if len(selected_services) > 1:
-            duration_min = _slot_duration_for_services(selected_services, service)
-            slots = await list_available_slots_for_duration(s, settings, service, day, duration_min)
-        else:
-            slots = await list_available_slots_for_service(s, settings, service, day)
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            services = await list_active_services(s)
+            service = next((x for x in services if x.id == svc_id), None)
+            if not service:
+                return await update.callback_query.message.edit_text("Услуга недоступна.")
+            selected_services = _collect_selected_services(services, _selected_service_ids(context))
+            if len(selected_services) > 1:
+                duration_min = _slot_duration_for_services(selected_services, service)
+                slots = await list_available_slots_for_duration(s, settings, service, day, duration_min)
+            else:
+                slots = await list_available_slots_for_service(s, settings, service, day)
 
     if not slots:
         return await update.callback_query.message.edit_text("На эту дату нет свободных слотов. Выбери другую дату.")
@@ -1258,6 +1274,19 @@ async def _finalize_break(message, context: ContextTypes.DEFAULT_TYPE, start_loc
                         skipped.append(candidate_start)
                         continue
                     raise
+            if repeat in {"daily", "weekly"}:
+                last_generated_date = None
+                if created:
+                    last_generated_date = max(dt.date() for dt in created)
+                await create_break_rule(
+                    s,
+                    repeat=repeat,
+                    start_local=start_local,
+                    duration_min=duration_min,
+                    reason=reason,
+                    created_by_admin=message.from_user.id if message.from_user else admin_ids(cfg)[0],
+                    last_generated_date=last_generated_date,
+                )
 
     _clear_break(context)
     if not created:
@@ -2763,16 +2792,18 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
 
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        day = (datetime.now(tz=settings.tz) + timedelta(days=offset_days)).date()
-        appts = await admin_list_appointments_for_day(s, settings.tz, day)
-        start_local = settings.tz.localize(datetime.combine(day, datetime.min.time()))
-        end_local = start_local + timedelta(days=1)
-        breaks = await list_future_breaks(
-            s,
-            start_local.astimezone(pytz.UTC),
-            end_local.astimezone(pytz.UTC),
-        )
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            day = (datetime.now(tz=settings.tz) + timedelta(days=offset_days)).date()
+            appts = await admin_list_appointments_for_day(s, settings.tz, day)
+            start_local = settings.tz.localize(datetime.combine(day, datetime.min.time()))
+            end_local = start_local + timedelta(days=1)
+            breaks = await list_future_breaks(
+                s,
+                start_local.astimezone(pytz.UTC),
+                end_local.astimezone(pytz.UTC),
+            )
 
     lines = [f"📅 Записи на {day.strftime('%d.%m')} ({RU_WEEKDAYS[day.weekday()]}):"]
     if not appts:
@@ -2822,20 +2853,22 @@ async def admin_week_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        start_day = datetime.now(tz=settings.tz).date()
-        start_local = settings.tz.localize(datetime.combine(start_day, datetime.min.time()))
-        end_local = start_local + timedelta(days=7)
-        appts = await admin_list_appointments_range(
-            s,
-            start_local.astimezone(pytz.UTC),
-            end_local.astimezone(pytz.UTC),
-        )
-        breaks = await list_future_breaks(
-            s,
-            start_local.astimezone(pytz.UTC),
-            end_local.astimezone(pytz.UTC),
-        )
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            start_day = datetime.now(tz=settings.tz).date()
+            start_local = settings.tz.localize(datetime.combine(start_day, datetime.min.time()))
+            end_local = start_local + timedelta(days=7)
+            appts = await admin_list_appointments_range(
+                s,
+                start_local.astimezone(pytz.UTC),
+                end_local.astimezone(pytz.UTC),
+            )
+            breaks = await list_future_breaks(
+                s,
+                start_local.astimezone(pytz.UTC),
+                end_local.astimezone(pytz.UTC),
+            )
 
     week_image = _build_week_schedule_image(start_day, settings, appts, breaks)
     await update.message.reply_photo(
@@ -2851,14 +2884,16 @@ async def admin_booked_month_view(update: Update, context: ContextTypes.DEFAULT_
 
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
-        settings = await get_settings(s, cfg.timezone)
-        now_local = datetime.now(tz=settings.tz)
-        end_local = now_local + timedelta(days=30)
-        appts = await admin_list_appointments_range(
-            s,
-            now_local.astimezone(pytz.UTC),
-            end_local.astimezone(pytz.UTC),
-        )
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            await _sync_break_rules(s, settings)
+            now_local = datetime.now(tz=settings.tz)
+            end_local = now_local + timedelta(days=30)
+            appts = await admin_list_appointments_range(
+                s,
+                now_local.astimezone(pytz.UTC),
+                end_local.astimezone(pytz.UTC),
+            )
 
     lines = ["🗓 Все записи на месяц вперёд:"]
     if not appts:
