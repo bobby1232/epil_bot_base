@@ -5,6 +5,7 @@ DAY_TIMELINE_STYLE = {
         "free": (72, 201, 93),
         "booked": (220, 70, 70),
         "hold": (246, 191, 64),
+        "break": (255, 245, 180),
     },
     "font_sizes": {
         "title": 28,
@@ -47,6 +48,10 @@ WEEK_SCHEDULE_STYLE = {
         "hold": {
             "fill": (240, 224, 176),
             "outline": (191, 162, 88),
+        },
+        "break": {
+            "fill": (255, 245, 190),
+            "outline": (209, 194, 117),
         },
     },
     "appointment_min_height": 18,

@@ -35,7 +35,7 @@ from app.keyboards import (
     break_dates_kb, break_slots_kb, status_ru, RU_WEEKDAYS, cancel_breaks_kb,
     contacts_kb, admin_visit_confirm_kb,
 )
-from app.models import AppointmentStatus
+from app.models import AppointmentStatus, BlockedInterval
 from app.schedule_style import DAY_TIMELINE_STYLE, WEEK_SCHEDULE_STYLE
 from app.utils import format_price, appointment_services_label
 from texts import (
@@ -75,6 +75,7 @@ K_ADMIN_RESCHED_SLOT = "admin_resched_slot_iso"
 K_BREAK_DATE = "break_date"
 K_BREAK_DURATION = "break_duration_min"
 K_BREAK_TIME_ERRORS = "break_time_errors"
+K_BREAK_REASON = "break_reason"
 
 ADDRESS_LINE = "Мусы Джалиля 30 к1, квартира 123"
 
@@ -176,9 +177,9 @@ def _clear_admin_visit(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("awaiting_admin_visit_price", None)
 
 def _clear_break(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in (K_BREAK_DATE, K_BREAK_DURATION, K_BREAK_TIME_ERRORS):
+    for key in (K_BREAK_DATE, K_BREAK_DURATION, K_BREAK_TIME_ERRORS, K_BREAK_REASON):
         context.user_data.pop(key, None)
-    for flag in ("awaiting_break_duration", "awaiting_break_time"):
+    for flag in ("awaiting_break_duration", "awaiting_break_reason", "awaiting_break_time"):
         context.user_data.pop(flag, None)
 
 def _normalize_phone(value: str) -> str:
@@ -220,6 +221,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unified_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_break_duration"):
         return await handle_break_duration(update, context)
+    if context.user_data.get("awaiting_break_reason"):
+        return await handle_break_reason(update, context)
     if context.user_data.get("awaiting_break_time"):
         return await handle_break_time(update, context)
     if context.user_data.get("awaiting_admin_duration"):
@@ -930,6 +933,28 @@ async def handle_break_duration(update: Update, context: ContextTypes.DEFAULT_TY
 
     context.user_data[K_BREAK_DURATION] = duration
     context.user_data["awaiting_break_duration"] = False
+    context.user_data["awaiting_break_reason"] = True
+    await update.message.reply_text(
+        "Напиши название перерыва (например, «Обед»).\n"
+        "Можно отправить «-», чтобы оставить стандартное название."
+    )
+
+async def handle_break_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_break_reason"):
+        return
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        _clear_break(context)
+        return await update.message.reply_text("Нет доступа.")
+
+    text = (update.message.text or "").strip()
+    if not text or text in {"-", "пропустить", "пропуск"}:
+        reason = "Перерыв"
+    else:
+        reason = text[:200]
+
+    context.user_data[K_BREAK_REASON] = reason
+    context.user_data["awaiting_break_reason"] = False
     await _send_break_time_prompt(update, context)
 
 async def admin_pick_time_from_slots(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_iso: str):
@@ -1138,6 +1163,7 @@ async def _finalize_break(message, context: ContextTypes.DEFAULT_TYPE, start_loc
     cfg: Config = context.bot_data["cfg"]
     day_iso = context.user_data.get(K_BREAK_DATE)
     duration_min = int(context.user_data.get(K_BREAK_DURATION, 0))
+    reason = (context.user_data.get(K_BREAK_REASON) or "Перерыв").strip() or "Перерыв"
     if not day_iso or duration_min <= 0:
         _clear_break(context)
         await message.reply_text("Сессия сброшена. Начни заново.", reply_markup=admin_menu_kb())
@@ -1154,6 +1180,7 @@ async def _finalize_break(message, context: ContextTypes.DEFAULT_TYPE, start_loc
                     start_local,
                     duration_min,
                     created_by_admin=message.from_user.id if message.from_user else admin_ids(cfg)[0],
+                    reason=reason,
                 )
             except ValueError as e:
                 code = str(e)
@@ -1169,6 +1196,7 @@ async def _finalize_break(message, context: ContextTypes.DEFAULT_TYPE, start_loc
     end_local = start_local + timedelta(minutes=duration_min)
     await message.reply_text(
         f"Перерыв добавлен ✅\n"
+        f"Название: {reason}\n"
         f"Дата: {start_local.strftime('%d.%m')}\n"
         f"Время: {start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}",
         reply_markup=admin_menu_kb(),
@@ -2049,7 +2077,12 @@ async def reminder_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, ap
 def _slot_status_for_time(
     slot_start_local: datetime,
     spans: list[tuple[datetime, datetime, AppointmentStatus]],
-) -> AppointmentStatus | None:
+    break_spans: list[tuple[datetime, datetime]] | None = None,
+) -> AppointmentStatus | str | None:
+    if break_spans:
+        for start_local, end_local in break_spans:
+            if start_local <= slot_start_local < end_local:
+                return "break"
     has_hold = False
     for start_local, end_local, status in spans:
         if start_local <= slot_start_local < end_local:
@@ -2063,6 +2096,7 @@ def _build_day_timeline(
     day: date,
     settings: SettingsView,
     appts: list,
+    breaks: list[BlockedInterval] | None = None,
     slots_per_line: int = 4,
 ) -> str:
     work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
@@ -2072,25 +2106,33 @@ def _build_day_timeline(
         (a.start_dt.astimezone(settings.tz), a.end_dt.astimezone(settings.tz), a.status)
         for a in appts
     ]
+    break_spans = []
+    if breaks:
+        break_spans = [
+            (b.start_dt.astimezone(settings.tz), b.end_dt.astimezone(settings.tz))
+            for b in breaks
+        ]
 
-    def slot_symbol(status: AppointmentStatus | None) -> str:
+    def slot_symbol(status: AppointmentStatus | str | None) -> str:
         if status == AppointmentStatus.Booked:
             return "🟥"
         if status == AppointmentStatus.Hold:
             return "🟨"
+        if status == "break":
+            return "🟡"
         return "🟩"
 
     slots: list[str] = []
     cursor = work_start_local
     while cursor < work_end_local:
-        status = _slot_status_for_time(cursor, spans)
+        status = _slot_status_for_time(cursor, spans, break_spans)
         slots.append(f"{cursor.strftime('%H:%M')}")
         cursor += step
 
     status_symbols = []
     cursor = work_start_local
     while cursor < work_end_local:
-        status = _slot_status_for_time(cursor, spans)
+        status = _slot_status_for_time(cursor, spans, break_spans)
         status_symbols.append(slot_symbol(status))
         cursor += step
 
@@ -2100,7 +2142,14 @@ def _build_day_timeline(
     for idx in range(0, len(entries), slots_per_line):
         row = entries[idx:idx + slots_per_line]
         lines.append("".join(entry.ljust(col_width) for entry in row).rstrip())
-    lines.append("Легенда: 🟩 свободно • 🟥 подтверждено • 🟨 ожидает подтверждения")
+    lines.append("Легенда: 🟩 свободно • 🟥 подтверждено • 🟨 ожидает подтверждения • 🟡 перерыв")
+    if breaks:
+        lines.append("Перерывы:")
+        for b in breaks:
+            start_t = b.start_dt.astimezone(settings.tz).strftime("%H:%M")
+            end_t = b.end_dt.astimezone(settings.tz).strftime("%H:%M")
+            reason = b.reason or "Перерыв"
+            lines.append(f"• {start_t}–{end_t} | {reason}")
     return "\n".join(lines)
 
 def _pick_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -2119,6 +2168,7 @@ def _build_day_timeline_image(
     day: date,
     settings: SettingsView,
     appts: list,
+    breaks: list[BlockedInterval] | None = None,
     slots_per_line: int = 4,
 ) -> BytesIO:
     style = DAY_TIMELINE_STYLE
@@ -2129,18 +2179,31 @@ def _build_day_timeline_image(
         (a.start_dt.astimezone(settings.tz), a.end_dt.astimezone(settings.tz), a.status)
         for a in appts
     ]
+    break_entries: list[tuple[datetime, datetime, str]] = []
+    if breaks:
+        break_entries = [
+            (
+                b.start_dt.astimezone(settings.tz),
+                b.end_dt.astimezone(settings.tz),
+                (b.reason or "Перерыв").strip() or "Перерыв",
+            )
+            for b in breaks
+        ]
+    break_spans = [(start, end) for start, end, _ in break_entries]
 
-    def slot_color(status: AppointmentStatus | None) -> tuple[int, int, int]:
+    def slot_color(status: AppointmentStatus | str | None) -> tuple[int, int, int]:
         if status == AppointmentStatus.Booked:
             return style["slot_colors"]["booked"]
         if status == AppointmentStatus.Hold:
             return style["slot_colors"]["hold"]
+        if status == "break":
+            return style["slot_colors"]["break"]
         return style["slot_colors"]["free"]
 
-    slots: list[tuple[str, AppointmentStatus | None]] = []
+    slots: list[tuple[str, AppointmentStatus | str | None]] = []
     cursor = work_start_local
     while cursor < work_end_local:
-        status = _slot_status_for_time(cursor, spans)
+        status = _slot_status_for_time(cursor, spans, break_spans)
         slots.append((cursor.strftime("%H:%M"), status))
         cursor += step
 
@@ -2171,6 +2234,7 @@ def _build_day_timeline_image(
         ("Свободно", slot_color(None)),
         ("Подтверждено", slot_color(AppointmentStatus.Booked)),
         ("Ожидает подтверждения", slot_color(AppointmentStatus.Hold)),
+        ("Перерыв", slot_color("break")),
     ]
     legend_text_height = max(
         (draw.textbbox((0, 0), label, font=legend_font)[3] for label, _ in legend_labels),
@@ -2178,8 +2242,24 @@ def _build_day_timeline_image(
     )
     legend_height = legend_text_height + 8
 
-    width = max(grid_width, 360) + padding * 2
-    height = padding + title_height + 20 + grid_height + 24 + legend_height + padding
+    break_lines: list[str] = []
+    if break_entries:
+        for start_local, end_local, reason in break_entries:
+            if start_local.date() == end_local.date():
+                time_label = f"{start_local.strftime('%H:%M')}–{end_local.strftime('%H:%M')}"
+            else:
+                time_label = f"{start_local.strftime('%d.%m %H:%M')}–{end_local.strftime('%d.%m %H:%M')}"
+            break_lines.append(f"{time_label} • {reason}")
+
+    break_text_width = max(
+        (draw.textbbox((0, 0), line, font=legend_font)[2] for line in break_lines),
+        default=0,
+    )
+    break_line_height = legend_text_height + 6
+    break_section_height = (len(break_lines) * break_line_height + 8) if break_lines else 0
+
+    width = max(grid_width, 360, break_text_width) + padding * 2
+    height = padding + title_height + 20 + grid_height + 24 + legend_height + break_section_height + padding
     img = Image.new("RGB", (width, height), style["background_color"])
     draw = ImageDraw.Draw(img)
 
@@ -2218,6 +2298,24 @@ def _build_day_timeline_image(
         )
         legend_x += square_size + 8 + draw.textbbox((0, 0), label, font=legend_font)[2] + 20
 
+    if break_lines:
+        break_y = legend_y + legend_height + 10
+        draw.text(
+            (padding, break_y),
+            "Перерывы:",
+            font=legend_font,
+            fill=style["legend_text_color"],
+        )
+        break_y += break_line_height
+        for line in break_lines:
+            draw.text(
+                (padding, break_y),
+                line,
+                font=legend_font,
+                fill=style["legend_text_color"],
+            )
+            break_y += break_line_height
+
     buffer = BytesIO()
     buffer.name = "timeline.png"
     img.save(buffer, format="PNG")
@@ -2251,6 +2349,7 @@ def _build_week_schedule_image(
     start_day: date,
     settings: SettingsView,
     appts: list,
+    breaks: list[BlockedInterval] | None = None,
 ) -> BytesIO:
     style = WEEK_SCHEDULE_STYLE
     days = [start_day + timedelta(days=offset) for offset in range(7)]
@@ -2324,7 +2423,10 @@ def _build_week_schedule_image(
             fill=style["time_text_color"],
         )
 
-    def appt_colors(status: AppointmentStatus) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    def block_colors(kind: str, status: AppointmentStatus | None) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        if kind == "break":
+            colors = style["appointment_colors"]["break"]
+            return colors["fill"], colors["outline"]
         if status == AppointmentStatus.Booked:
             colors = style["appointment_colors"]["booked"]
             return colors["fill"], colors["outline"]
@@ -2333,9 +2435,26 @@ def _build_week_schedule_image(
 
     line_height = draw.textbbox((0, 0), "Ag", font=appt_font)[3] + 2
 
-    for appt in appts:
-        local_start = appt.start_dt.astimezone(settings.tz)
-        local_end = appt.end_dt.astimezone(settings.tz)
+    break_items = breaks or []
+    for kind, item in (
+        [("appointment", appt) for appt in appts]
+        + [("break", br) for br in break_items]
+    ):
+        if kind == "break":
+            local_start = item.start_dt.astimezone(settings.tz)
+            local_end = item.end_dt.astimezone(settings.tz)
+            label_lines = [item.reason or "Перерыв"]
+            status = None
+        else:
+            local_start = item.start_dt.astimezone(settings.tz)
+            local_end = item.end_dt.astimezone(settings.tz)
+            client_label = item.client.full_name or (f"@{item.client.username}" if item.client.username else str(item.client.tg_id))
+            service_label = appointment_services_label(item)
+            label_lines = [client_label]
+            if service_label:
+                label_lines.append(service_label)
+            status = item.status
+
         day_offset = (local_start.date() - start_day).days
         if day_offset < 0 or day_offset >= 7:
             continue
@@ -2353,7 +2472,7 @@ def _build_week_schedule_image(
         if y1 - y0 < style["appointment_min_height"]:
             y1 = y0 + style["appointment_min_height"]
 
-        fill, outline = appt_colors(appt.status)
+        fill, outline = block_colors(kind, status)
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=style["appointment_corner_radius"],
@@ -2362,12 +2481,11 @@ def _build_week_schedule_image(
             width=style["appointment_outline_width"],
         )
 
-        client_label = appt.client.full_name or (f"@{appt.client.username}" if appt.client.username else str(appt.client.tg_id))
-        service_label = appointment_services_label(appt)
         max_text_width = int(x1 - x0 - style["appointment_text_padding_x"] * 2)
-        text_lines = _wrap_text_lines(client_label, draw, appt_font, max_text_width)
-        if service_label:
-            text_lines += _wrap_text_lines(service_label, draw, appt_font, max_text_width)
+        text_lines: list[str] = []
+        for label in label_lines:
+            if label:
+                text_lines += _wrap_text_lines(label, draw, appt_font, max_text_width)
         max_lines = max(
             int((y1 - y0 - style["appointment_text_padding_y"] * 2) / line_height),
             0,
@@ -2394,6 +2512,7 @@ def _build_single_day_schedule_image(
     day: date,
     settings: SettingsView,
     appts: list,
+    breaks: list[BlockedInterval] | None = None,
 ) -> BytesIO:
     style = WEEK_SCHEDULE_STYLE
     days = [day]
@@ -2467,7 +2586,10 @@ def _build_single_day_schedule_image(
             fill=style["time_text_color"],
         )
 
-    def appt_colors(status: AppointmentStatus) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    def block_colors(kind: str, status: AppointmentStatus | None) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        if kind == "break":
+            colors = style["appointment_colors"]["break"]
+            return colors["fill"], colors["outline"]
         if status == AppointmentStatus.Booked:
             colors = style["appointment_colors"]["booked"]
             return colors["fill"], colors["outline"]
@@ -2476,9 +2598,26 @@ def _build_single_day_schedule_image(
 
     line_height = draw.textbbox((0, 0), "Ag", font=appt_font)[3] + 2
 
-    for appt in appts:
-        local_start = appt.start_dt.astimezone(settings.tz)
-        local_end = appt.end_dt.astimezone(settings.tz)
+    break_items = breaks or []
+    for kind, item in (
+        [("appointment", appt) for appt in appts]
+        + [("break", br) for br in break_items]
+    ):
+        if kind == "break":
+            local_start = item.start_dt.astimezone(settings.tz)
+            local_end = item.end_dt.astimezone(settings.tz)
+            label_lines = [item.reason or "Перерыв"]
+            status = None
+        else:
+            local_start = item.start_dt.astimezone(settings.tz)
+            local_end = item.end_dt.astimezone(settings.tz)
+            client_label = item.client.full_name or (f"@{item.client.username}" if item.client.username else str(item.client.tg_id))
+            service_label = appointment_services_label(item)
+            label_lines = [client_label]
+            if service_label:
+                label_lines.append(service_label)
+            status = item.status
+
         day_offset = (local_start.date() - day).days
         if day_offset != 0:
             continue
@@ -2496,7 +2635,7 @@ def _build_single_day_schedule_image(
         if y1 - y0 < style["appointment_min_height"]:
             y1 = y0 + style["appointment_min_height"]
 
-        fill, outline = appt_colors(appt.status)
+        fill, outline = block_colors(kind, status)
         draw.rounded_rectangle(
             (x0, y0, x1, y1),
             radius=style["appointment_corner_radius"],
@@ -2505,12 +2644,11 @@ def _build_single_day_schedule_image(
             width=style["appointment_outline_width"],
         )
 
-        client_label = appt.client.full_name or (f"@{appt.client.username}" if appt.client.username else str(appt.client.tg_id))
-        service_label = appointment_services_label(appt)
         max_text_width = int(x1 - x0 - style["appointment_text_padding_x"] * 2)
-        text_lines = _wrap_text_lines(client_label, draw, appt_font, max_text_width)
-        if service_label:
-            text_lines += _wrap_text_lines(service_label, draw, appt_font, max_text_width)
+        text_lines: list[str] = []
+        for label in label_lines:
+            if label:
+                text_lines += _wrap_text_lines(label, draw, appt_font, max_text_width)
         max_lines = max(
             int((y1 - y0 - style["appointment_text_padding_y"] * 2) / line_height),
             0,
@@ -2576,9 +2714,9 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
     if getattr(cfg, "schedule_visualization", 1) == 2:
-        timeline_image = _build_single_day_schedule_image(day, settings, appts)
+        timeline_image = _build_single_day_schedule_image(day, settings, appts, breaks)
     else:
-        timeline_image = _build_day_timeline_image(day, settings, appts)
+        timeline_image = _build_day_timeline_image(day, settings, appts, breaks)
     await update.message.reply_photo(
         photo=timeline_image,
         caption="🧭 График слотов",
@@ -2608,8 +2746,13 @@ async def admin_week_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             start_local.astimezone(pytz.UTC),
             end_local.astimezone(pytz.UTC),
         )
+        breaks = await list_future_breaks(
+            s,
+            start_local.astimezone(pytz.UTC),
+            end_local.astimezone(pytz.UTC),
+        )
 
-    week_image = _build_week_schedule_image(start_day, settings, appts)
+    week_image = _build_week_schedule_image(start_day, settings, appts, breaks)
     await update.message.reply_photo(
         photo=week_image,
         caption="📆 Записи на неделю",
