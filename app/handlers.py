@@ -1378,21 +1378,25 @@ async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_my_appointments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
         appts = await get_user_appointments(s, update.effective_user.id, limit=10)
     if not appts:
         await update.message.reply_text("У вас пока нет записей.", reply_markup=main_menu_for(update, context))
         return
-    await update.message.reply_text("Ваши записи:", reply_markup=my_appts_kb(appts))
+    await update.message.reply_text("Ваши записи:", reply_markup=my_appts_kb(appts, settings.tz))
 
 async def show_my_appointments_from_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg: Config = context.bot_data["cfg"]
     session_factory = context.bot_data["session_factory"]
     async with session_factory() as s:
+        settings = await get_settings(s, cfg.timezone)
         appts = await get_user_appointments(s, update.effective_user.id, limit=10)
     if not appts:
         return await update.callback_query.message.edit_text("У вас пока нет записей.")
-    await update.callback_query.message.edit_text("Ваши записи:", reply_markup=my_appts_kb(appts))
+    await update.callback_query.message.edit_text("Ваши записи:", reply_markup=my_appts_kb(appts, settings.tz))
 
 
 async def show_my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1404,7 +1408,7 @@ async def show_my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not appts:
         await update.message.reply_text("История пустая.", reply_markup=main_menu_for(update, context))
         return
-    await update.message.reply_text("История:", reply_markup=my_appts_kb(appts))
+    await update.message.reply_text("История:", reply_markup=my_appts_kb(appts, settings.tz))
 
 async def show_my_history_from_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
@@ -1414,7 +1418,7 @@ async def show_my_history_from_cb(update: Update, context: ContextTypes.DEFAULT_
         appts = await get_user_appointments_history(s, update.effective_user.id, limit=10)
     if not appts:
         return await update.callback_query.message.edit_text("История пустая.")
-    await update.callback_query.message.edit_text("История:", reply_markup=my_appts_kb(appts))
+    await update.callback_query.message.edit_text("История:", reply_markup=my_appts_kb(appts, settings.tz))
 
 async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
