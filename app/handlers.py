@@ -36,6 +36,7 @@ from app.keyboards import (
     contacts_kb, admin_visit_confirm_kb,
 )
 from app.models import AppointmentStatus
+from app.schedule_style import DAY_TIMELINE_STYLE, WEEK_SCHEDULE_STYLE
 from app.utils import format_price, appointment_services_label
 from texts import (
     CONTACTS,
@@ -2120,6 +2121,7 @@ def _build_day_timeline_image(
     appts: list,
     slots_per_line: int = 4,
 ) -> BytesIO:
+    style = DAY_TIMELINE_STYLE
     work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
     work_end_local = settings.tz.localize(datetime.combine(day, settings.work_end))
     step = timedelta(minutes=settings.slot_step_min)
@@ -2130,10 +2132,10 @@ def _build_day_timeline_image(
 
     def slot_color(status: AppointmentStatus | None) -> tuple[int, int, int]:
         if status == AppointmentStatus.Booked:
-            return (220, 70, 70)
+            return style["slot_colors"]["booked"]
         if status == AppointmentStatus.Hold:
-            return (246, 191, 64)
-        return (72, 201, 93)
+            return style["slot_colors"]["hold"]
+        return style["slot_colors"]["free"]
 
     slots: list[tuple[str, AppointmentStatus | None]] = []
     cursor = work_start_local
@@ -2142,14 +2144,14 @@ def _build_day_timeline_image(
         slots.append((cursor.strftime("%H:%M"), status))
         cursor += step
 
-    title_font = _pick_font(28)
-    time_font = _pick_font(24)
-    legend_font = _pick_font(20)
+    title_font = _pick_font(style["font_sizes"]["title"])
+    time_font = _pick_font(style["font_sizes"]["time"])
+    legend_font = _pick_font(style["font_sizes"]["legend"])
 
-    padding = 28
-    col_gap = 18
-    row_gap = 16
-    square_size = 18
+    padding = style["padding"]
+    col_gap = style["col_gap"]
+    row_gap = style["row_gap"]
+    square_size = style["square_size"]
 
     dummy_img = Image.new("RGB", (10, 10))
     draw = ImageDraw.Draw(dummy_img)
@@ -2178,12 +2180,12 @@ def _build_day_timeline_image(
 
     width = max(grid_width, 360) + padding * 2
     height = padding + title_height + 20 + grid_height + 24 + legend_height + padding
-    img = Image.new("RGB", (width, height), (29, 24, 40))
+    img = Image.new("RGB", (width, height), style["background_color"])
     draw = ImageDraw.Draw(img)
 
     title_x = padding
     title_y = padding
-    draw.text((title_x, title_y), title_text, font=title_font, fill=(245, 245, 245))
+    draw.text((title_x, title_y), title_text, font=title_font, fill=style["title_color"])
 
     grid_start_y = title_y + title_height + 20
     for idx, (time_label, status) in enumerate(slots):
@@ -2191,12 +2193,12 @@ def _build_day_timeline_image(
         col = idx % slots_per_line
         x = padding + col * (cell_width + col_gap)
         y = grid_start_y + row * (cell_height + row_gap)
-        draw.text((x, y), time_label, font=time_font, fill=(230, 230, 230))
+        draw.text((x, y), time_label, font=time_font, fill=style["time_color"])
         square_x = x + time_width + 10
         square_y = y + (cell_height - square_size) // 2
         draw.rounded_rectangle(
             (square_x, square_y, square_x + square_size, square_y + square_size),
-            radius=4,
+            radius=style["legend_square_radius"],
             fill=slot_color(status),
         )
 
@@ -2205,10 +2207,15 @@ def _build_day_timeline_image(
     for label, color in legend_labels:
         draw.rounded_rectangle(
             (legend_x, legend_y + 2, legend_x + square_size, legend_y + square_size + 2),
-            radius=4,
+            radius=style["legend_square_radius"],
             fill=color,
         )
-        draw.text((legend_x + square_size + 8, legend_y), label, font=legend_font, fill=(230, 230, 230))
+        draw.text(
+            (legend_x + square_size + 8, legend_y),
+            label,
+            font=legend_font,
+            fill=style["legend_text_color"],
+        )
         legend_x += square_size + 8 + draw.textbbox((0, 0), label, font=legend_font)[2] + 20
 
     buffer = BytesIO()
@@ -2245,19 +2252,20 @@ def _build_week_schedule_image(
     settings: SettingsView,
     appts: list,
 ) -> BytesIO:
+    style = WEEK_SCHEDULE_STYLE
     days = [start_day + timedelta(days=offset) for offset in range(7)]
     work_start_minutes = settings.work_start.hour * 60 + settings.work_start.minute
     work_end_minutes = settings.work_end.hour * 60 + settings.work_end.minute
     total_minutes = max(work_end_minutes - work_start_minutes, 60)
 
-    title_font = _pick_font(26)
-    header_font = _pick_font(18)
-    time_font = _pick_font(18)
-    appt_font = _pick_font(16)
+    title_font = _pick_font(style["font_sizes"]["title"])
+    header_font = _pick_font(style["font_sizes"]["header"])
+    time_font = _pick_font(style["font_sizes"]["time"])
+    appt_font = _pick_font(style["font_sizes"]["appointment"])
 
-    padding = 24
-    header_height = 42
-    hour_height = 80
+    padding = style["padding"]
+    header_height = style["header_height"]
+    hour_height = style["hour_height"]
     minute_height = hour_height / 60
 
     dummy_img = Image.new("RGB", (10, 10))
@@ -2278,27 +2286,32 @@ def _build_week_schedule_image(
 
     width = grid_left + grid_width + padding
     height = grid_top + grid_height + padding + title_height
-    img = Image.new("RGB", (width, height), (248, 248, 248))
+    img = Image.new("RGB", (width, height), style["background_color"])
     draw = ImageDraw.Draw(img)
 
     title_y = padding
-    draw.text((padding, title_y), title_text, font=title_font, fill=(40, 40, 40))
+    draw.text((padding, title_y), title_text, font=title_font, fill=style["title_color"])
 
     header_y = title_y + title_height + 12
     for idx, label in enumerate(day_labels):
         x = grid_left + idx * day_col_width + day_col_width / 2
         label_width = draw.textbbox((0, 0), label, font=header_font)[2]
-        draw.text((x - label_width / 2, header_y), label, font=header_font, fill=(60, 60, 60))
+        draw.text(
+            (x - label_width / 2, header_y),
+            label,
+            font=header_font,
+            fill=style["header_text_color"],
+        )
 
     grid_top = header_y + header_height - 6
 
     for day_idx in range(8):
         x = grid_left + day_idx * day_col_width
-        draw.line((x, grid_top, x, grid_top + grid_height), fill=(190, 190, 190), width=1)
+        draw.line((x, grid_top, x, grid_top + grid_height), fill=style["grid_line_color"], width=1)
 
     for minute_offset in range(0, total_minutes + 1, 60):
         y = grid_top + minute_offset * minute_height
-        draw.line((grid_left, y, grid_left + grid_width, y), fill=(200, 200, 200), width=1)
+        draw.line((grid_left, y, grid_left + grid_width, y), fill=style["hour_line_color"], width=1)
         time_minutes = work_start_minutes + minute_offset
         hour = time_minutes // 60
         minute = time_minutes % 60
@@ -2308,13 +2321,15 @@ def _build_week_schedule_image(
             (grid_left - 12 - label_width, y - 10),
             label,
             font=time_font,
-            fill=(110, 110, 110),
+            fill=style["time_text_color"],
         )
 
     def appt_colors(status: AppointmentStatus) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
         if status == AppointmentStatus.Booked:
-            return (248, 209, 223), (196, 85, 128)
-        return (240, 224, 176), (191, 162, 88)
+            colors = style["appointment_colors"]["booked"]
+            return colors["fill"], colors["outline"]
+        colors = style["appointment_colors"]["hold"]
+        return colors["fill"], colors["outline"]
 
     line_height = draw.textbbox((0, 0), "Ag", font=appt_font)[3] + 2
 
@@ -2335,23 +2350,38 @@ def _build_week_schedule_image(
         x1 = x0 + day_col_width - 12
         y0 = grid_top + start_min * minute_height + 2
         y1 = grid_top + end_min * minute_height - 2
-        if y1 - y0 < 18:
-            y1 = y0 + 18
+        if y1 - y0 < style["appointment_min_height"]:
+            y1 = y0 + style["appointment_min_height"]
 
         fill, outline = appt_colors(appt.status)
-        draw.rounded_rectangle((x0, y0, x1, y1), radius=6, fill=fill, outline=outline, width=2)
+        draw.rounded_rectangle(
+            (x0, y0, x1, y1),
+            radius=style["appointment_corner_radius"],
+            fill=fill,
+            outline=outline,
+            width=style["appointment_outline_width"],
+        )
 
         client_label = appt.client.full_name or (f"@{appt.client.username}" if appt.client.username else str(appt.client.tg_id))
         service_label = appointment_services_label(appt)
-        text_lines = _wrap_text_lines(client_label, draw, appt_font, int(x1 - x0 - 10))
+        max_text_width = int(x1 - x0 - style["appointment_text_padding_x"] * 2)
+        text_lines = _wrap_text_lines(client_label, draw, appt_font, max_text_width)
         if service_label:
-            text_lines += _wrap_text_lines(service_label, draw, appt_font, int(x1 - x0 - 10))
-        max_lines = max(int((y1 - y0 - 8) / line_height), 0)
+            text_lines += _wrap_text_lines(service_label, draw, appt_font, max_text_width)
+        max_lines = max(
+            int((y1 - y0 - style["appointment_text_padding_y"] * 2) / line_height),
+            0,
+        )
         if max_lines:
             text_lines = text_lines[:max_lines]
-            text_y = y0 + 4
+            text_y = y0 + style["appointment_text_padding_y"]
             for line in text_lines:
-                draw.text((x0 + 6, text_y), line, font=appt_font, fill=(60, 60, 60))
+                draw.text(
+                    (x0 + style["appointment_text_padding_x"], text_y),
+                    line,
+                    font=appt_font,
+                    fill=style["appointment_text_color"],
+                )
                 text_y += line_height
 
     buffer = BytesIO()
