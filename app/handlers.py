@@ -64,6 +64,7 @@ K_ADMIN_CLIENT_NAME = "admin_client_name"
 K_ADMIN_CLIENT_PHONE = "admin_client_phone"
 K_ADMIN_CLIENT_TGID = "admin_client_tg_id"
 K_ADMIN_PRICE = "admin_price_override"
+K_ADMIN_CONFIRM_APPT = "admin_confirm_appt_id"
 K_ADMIN_TIME_ERRORS = "admin_time_errors"
 K_ADMIN_RESCHED_APPT = "admin_resched_appt_id"
 K_ADMIN_RESCHED_SVC = "admin_resched_svc_id"
@@ -164,6 +165,10 @@ def _clear_admin_reschedule(context: ContextTypes.DEFAULT_TYPE) -> None:
     ):
         context.user_data.pop(key, None)
 
+def _clear_admin_confirm(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(K_ADMIN_CONFIRM_APPT, None)
+    context.user_data.pop("awaiting_admin_confirm_price", None)
+
 def _clear_break(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (K_BREAK_DATE, K_BREAK_DURATION, K_BREAK_TIME_ERRORS):
         context.user_data.pop(key, None)
@@ -223,6 +228,8 @@ async def unified_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await handle_admin_client_tg(update, context)
     if context.user_data.get("awaiting_admin_price"):
         return await handle_admin_price(update, context)
+    if context.user_data.get("awaiting_admin_confirm_price"):
+        return await handle_admin_confirm_price(update, context)
     if context.user_data.get("awaiting_question"):
         return await handle_question(update, context)
     if context.user_data.get("awaiting_comment"):
@@ -1289,6 +1296,66 @@ async def handle_admin_price(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pass
     await update.message.reply_text("Админ-панель 👇", reply_markup=admin_menu_kb())
 
+async def handle_admin_confirm_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_admin_confirm_price"):
+        return
+    cfg: Config = context.bot_data["cfg"]
+    if not is_admin(cfg, update.effective_user.id):
+        _clear_admin_confirm(context)
+        return await update.message.reply_text("Нет доступа.")
+
+    txt = (update.message.text or "").strip()
+    if txt.lower() in {"отмена", "cancel", "/cancel"}:
+        _clear_admin_confirm(context)
+        return await update.message.reply_text("Подтверждение отменено.", reply_markup=admin_menu_kb())
+
+    appt_id = context.user_data.get(K_ADMIN_CONFIRM_APPT)
+    if not appt_id:
+        _clear_admin_confirm(context)
+        return await update.message.reply_text("Сессия сброшена. Повтори подтверждение.", reply_markup=admin_menu_kb())
+
+    price_override = None
+    if txt not in {"-", "стандарт", "стандартная"}:
+        try:
+            price_override = float(txt.replace(",", "."))
+        except ValueError:
+            return await update.message.reply_text("Цена должна быть числом. Введи цену или «-».")
+        if price_override < 0:
+            return await update.message.reply_text("Цена не может быть отрицательной. Введи цену или «-».")
+
+    session_factory = context.bot_data["session_factory"]
+    async with session_factory() as s:
+        async with s.begin():
+            settings = await get_settings(s, cfg.timezone)
+            appt = await get_appointment(s, appt_id)
+            if appt.status != AppointmentStatus.Hold:
+                _clear_admin_confirm(context)
+                return await update.message.reply_text("Заявка уже обработана.", reply_markup=admin_menu_kb())
+            if price_override is not None:
+                appt.price_override = price_override
+            await admin_confirm(s, appt)
+
+            price_label = format_price(appt.price_override if appt.price_override is not None else appt.service.price)
+            await context.bot.send_message(
+                chat_id=appt.client.tg_id,
+                text=(
+                    f"✅ Запись подтверждена!\n"
+                    f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
+                    f"Услуга: {appointment_services_label(appt)}\n"
+                    f"Цена: {price_label}\n"
+                    f"Адриана ждет Вас!\n\n"
+                ),
+            )
+            await asyncio.sleep(5)
+            for part in PRECARE_RECOMMENDATIONS_PARTS:
+                await context.bot.send_message(
+                    chat_id=appt.client.tg_id,
+                    text=part,
+                )
+
+    _clear_admin_confirm(context)
+    await update.message.reply_text("Подтверждено ✅", reply_markup=admin_menu_kb())
+
 async def finalize_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg: Config = context.bot_data["cfg"]
     session_factory = context.bot_data["session_factory"]
@@ -1601,26 +1668,19 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
 
     async with session_factory() as s:
         async with s.begin():
-            settings = await get_settings(s, cfg.timezone)
             appt = await get_appointment(s, appt_id)
-            await admin_confirm(s, appt)
+            if appt.status != AppointmentStatus.Hold:
+                return await update.callback_query.message.edit_text("Заявка уже обработана.")
+            price_label = format_price(appt.price_override if appt.price_override is not None else appt.service.price)
 
-            await context.bot.send_message(
-                chat_id=appt.client.tg_id,
-                text=(
-                    f"✅ Запись подтверждена!\n"
-                    f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
-                    f"Услуга: {appointment_services_label(appt)}\n"
-                    f"Адриана ждет Вас!\n\n"
-                ),
-            )
-            await asyncio.sleep(5)
-            for part in PRECARE_RECOMMENDATIONS_PARTS:
-                await context.bot.send_message(
-                    chat_id=appt.client.tg_id,
-                    text=part,
-                )
-    await update.callback_query.message.edit_text("Подтверждено ✅")
+    _clear_admin_confirm(context)
+    context.user_data[K_ADMIN_CONFIRM_APPT] = appt_id
+    context.user_data["awaiting_admin_confirm_price"] = True
+    await update.callback_query.message.edit_text(
+        "Введи новую цену или «-», чтобы оставить текущую.\n"
+        f"Текущая цена: {price_label}\n"
+        "Для отмены отправь /cancel."
+    )
 
 async def admin_action_reject(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_id: int):
     cfg: Config = context.bot_data["cfg"]
