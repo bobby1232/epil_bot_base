@@ -1759,7 +1759,7 @@ def _build_day_timeline(
     day: date,
     settings: SettingsView,
     appts: list,
-    slots_per_line: int = 6,
+    slots_per_line: int = 4,
 ) -> str:
     work_start_local = settings.tz.localize(datetime.combine(day, settings.work_start))
     work_end_local = settings.tz.localize(datetime.combine(day, settings.work_end))
@@ -1790,20 +1790,12 @@ def _build_day_timeline(
         status_symbols.append(slot_symbol(status))
         cursor += step
 
+    entries = [f"{time_label} {symbol}" for time_label, symbol in zip(slots, status_symbols)]
+    col_width = max((len(entry) for entry in entries), default=0) + 2
     lines = ["🧭 График слотов:"]
-    time_row: list[str] = []
-    symbol_row: list[str] = []
-    for time_label, symbol in zip(slots, status_symbols):
-        time_row.append(time_label)
-        symbol_row.append(symbol.center(5))
-        if len(time_row) >= slots_per_line:
-            lines.append(" ".join(time_row))
-            lines.append(" ".join(symbol_row))
-            time_row = []
-            symbol_row = []
-    if time_row:
-        lines.append(" ".join(time_row))
-        lines.append(" ".join(symbol_row))
+    for idx in range(0, len(entries), slots_per_line):
+        row = entries[idx:idx + slots_per_line]
+        lines.append("".join(entry.ljust(col_width) for entry in row).rstrip())
     lines.append("Легенда: 🟩 свободно • 🟥 подтверждено • 🟨 ожидает подтверждения")
     return "\n".join(lines)
 
