@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from app.models import Service, Appointment
-from app.utils import format_price
+from app.utils import format_price, appointment_services_label
 
 STATUS_RU = {
     "Hold": "Ожидает подтверждения",
@@ -172,9 +172,10 @@ def my_appts_kb(appts: list[Appointment], tz=None) -> InlineKeyboardMarkup:
     for a in appts:
         dt = a.start_dt.astimezone(tz) if tz else a.start_dt.astimezone()
         price = format_price(a.price_override if a.price_override is not None else a.service.price)
+        service_label = appointment_services_label(a)
         rows.append([
             InlineKeyboardButton(
-                f"{dt.strftime('%d.%m %H:%M')} • {a.service.name} • {price} • {status_ru(a.status.value)}",
+                f"{dt.strftime('%d.%m %H:%M')} • {service_label} • {price} • {status_ru(a.status.value)}",
                 callback_data=f"my:{a.id}",
             )
         ])

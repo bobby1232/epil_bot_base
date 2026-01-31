@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.models import Appointment, AppointmentStatus, User, Service
 from app.logic import get_settings
 from app.keyboards import reminder_kb
-from app.utils import format_price
+from app.utils import format_price, appointment_services_label
 from texts import AFTERCARE_RECOMMENDATIONS_PARTS
 
 
@@ -170,7 +170,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             d, t = _fmt_date(appt.start_dt, tz_name)
             allow_reschedule = now <= (appt.start_dt - timedelta(hours=settings.cancel_limit_hours))
             text = REMINDER_48H_TEMPLATE.format(
-                service=(appt.service.name if appt.service else "Услуга"),
+                service=appointment_services_label(appt),
                 date=d,
                 time=t,
             )
@@ -211,7 +211,7 @@ async def check_and_send_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             d, t = _fmt_date(appt.start_dt, tz_name)
             allow_reschedule = now <= (appt.start_dt - timedelta(hours=settings.cancel_limit_hours))
             text = REMINDER_3H_TEMPLATE.format(
-                service=(appt.service.name if appt.service else "Услуга"),
+                service=appointment_services_label(appt),
                 time=t,
             )
 
@@ -323,8 +323,9 @@ async def send_daily_admin_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
             price = format_price(
                 appt.price_override if appt.price_override is not None else appt.service.price
             )
+            service_label = appointment_services_label(appt)
             lines.append(
-                f"• {start_t}–{end_t} | {appt.service.name} | {price} | {client} | {phone}"
+                f"• {start_t}–{end_t} | {service_label} | {price} | {client} | {phone}"
             )
         text = "\n".join(lines)
 

@@ -36,7 +36,7 @@ from app.keyboards import (
     contacts_kb,
 )
 from app.models import AppointmentStatus
-from app.utils import format_price
+from app.utils import format_price, appointment_services_label
 from texts import (
     CONTACTS,
     PRECARE_RECOMMENDATIONS,
@@ -1433,7 +1433,7 @@ async def show_my_appointment_detail(update: Update, context: ContextTypes.DEFAU
         "Запись\n"
         f"Статус: {status_ru(appt.status.value)}\n"
         f"Дата/время: {appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
-        f"Услуга: {appt.service.name}\n"
+        f"Услуга: {appointment_services_label(appt)}\n"
         f"Цена: {price}\n"
         f"Комментарий: {appt.client_comment or '—'}"
         f"{proposed}"
@@ -1564,7 +1564,7 @@ async def finalize_reschedule_request(update: Update, context: ContextTypes.DEFA
                 text=(
                     "🔄 Запрос на перенос записи\n"
                     f"#{appt.id}\n"
-                    f"Услуга: {appt.service.name}\n"
+                    f"Услуга: {appointment_services_label(appt)}\n"
                     f"Текущее время: {old_local.strftime('%d.%m %H:%M')}\n"
                     f"Новое время: {new_local.strftime('%d.%m %H:%M')}\n"
                     f"Клиент: {appt.client.full_name or appt.client.tg_id}\n"
@@ -1597,7 +1597,7 @@ async def admin_action_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
                 text=(
                     f"✅ Запись подтверждена!\n"
                     f"{appt.start_dt.astimezone(settings.tz).strftime('%d.%m %H:%M')}\n"
-                    f"Услуга: {appt.service.name}\n"
+                    f"Услуга: {appointment_services_label(appt)}\n"
                     f"Адриана ждет Вас!\n\n"
                 ),
             )
@@ -1655,7 +1655,7 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, appt_
                         text=(
                             "🚫 Мастер отменил вашу запись.\n"
                             f"Дата/время: {appt_local}\n"
-                            f"Услуга: {appt.service.name}"
+                            f"Услуга: {appointment_services_label(appt)}"
                         )
                     )
                 except Exception:
@@ -1780,7 +1780,7 @@ async def admin_finalize_reschedule(update: Update, context: ContextTypes.DEFAUL
                         text=(
                             "🔄 Мастер перенёс вашу запись.\n"
                             f"Новая дата/время: {new_local}\n"
-                            f"Услуга: {appt.service.name}"
+                            f"Услуга: {appointment_services_label(appt)}"
                         )
                     )
                 except Exception:
@@ -1817,7 +1817,7 @@ async def admin_reschedule_confirm(update: Update, context: ContextTypes.DEFAULT
                 text=(
                     "✅ Перенос подтверждён!\n"
                     f"Новая дата/время: {new_local}\n"
-                    f"Услуга: {appt.service.name}"
+                    f"Услуга: {appointment_services_label(appt)}"
                 )
             )
     await update.callback_query.message.edit_text("Перенос подтверждён ✅")
@@ -2067,8 +2067,9 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
             client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
             phone = a.client.phone or "—"
             price = format_price(a.price_override if a.price_override is not None else a.service.price)
+            service_label = appointment_services_label(a)
             lines.append(
-                f"• {start_t}–{end_t} | {status_ru(a.status.value)} | {a.service.name} | {price} | {client} | {phone}"
+                f"• {start_t}–{end_t} | {status_ru(a.status.value)} | {service_label} | {price} | {client} | {phone}"
             )
 
     if breaks:
@@ -2090,7 +2091,7 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
         if a.status == AppointmentStatus.Booked:
             start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
             await update.message.reply_text(
-                f"Запись • {start_t} • {a.service.name}",
+                f"Запись • {start_t} • {appointment_services_label(a)}",
                 reply_markup=admin_manage_appt_kb(a.id, allow_reschedule=_is_admin_created(a)),
             )
 
@@ -2124,8 +2125,9 @@ async def admin_booked_month_view(update: Update, context: ContextTypes.DEFAULT_
         client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
         phone = a.client.phone or "—"
         price = format_price(a.price_override if a.price_override is not None else a.service.price)
+        service_label = appointment_services_label(a)
         lines.append(
-            f"• {day_label} {local_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')} | {a.service.name} | {price} | {client} | {phone}"
+            f"• {day_label} {local_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')} | {service_label} | {price} | {client} | {phone}"
         )
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
@@ -2193,6 +2195,6 @@ async def admin_holds_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = a.start_dt.astimezone(settings.tz).strftime("%d.%m %H:%M")
         exp = a.hold_expires_at.astimezone(settings.tz).strftime("%H:%M") if a.hold_expires_at else "—"
         client = a.client.full_name or (f"@{a.client.username}" if a.client.username else str(a.client.tg_id))
-        lines.append(f"• {t} | #{a.id} | {a.service.name} | {client} | hold до {exp}")
+        lines.append(f"• {t} | #{a.id} | {appointment_services_label(a)} | {client} | hold до {exp}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
