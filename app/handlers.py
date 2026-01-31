@@ -1771,10 +1771,10 @@ def _build_day_timeline(
 
     def slot_symbol(status: AppointmentStatus | None) -> str:
         if status == AppointmentStatus.Booked:
-            return "■"
+            return "🟥"
         if status == AppointmentStatus.Hold:
-            return "▣"
-        return "□"
+            return "🟨"
+        return "🟩"
 
     slots: list[str] = []
     cursor = work_start_local
@@ -1804,7 +1804,7 @@ def _build_day_timeline(
     if time_row:
         lines.append(" ".join(time_row))
         lines.append(" ".join(symbol_row))
-    lines.append("Легенда: □ свободно • ■ подтверждено • ▣ ожидает подтверждения")
+    lines.append("Легенда: 🟩 свободно • 🟥 подтверждено • 🟨 ожидает подтверждения")
     return "\n".join(lines)
 
 async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, offset_days: int):
