@@ -1786,12 +1786,12 @@ def _build_day_timeline(
     lines = ["🧭 График слотов:"]
     row: list[str] = []
     for item in slots:
-        row.append(item)
+        row.append(item.ljust(8))
         if len(row) >= slots_per_line:
-            lines.append("  ".join(row))
+            lines.append(" ".join(row).rstrip())
             row = []
     if row:
-        lines.append("  ".join(row))
+        lines.append(" ".join(row).rstrip())
     lines.append("Легенда: ⬜️ свободно • 🟩 подтверждено • 🟦 ожидает подтверждения")
     return "\n".join(lines)
 
@@ -1836,7 +1836,8 @@ async def admin_day_view(update: Update, context: ContextTypes.DEFAULT_TYPE, off
             lines.append(f"  - {start_t}–{end_t} | {reason}")
 
     await update.message.reply_text("\n".join(lines), reply_markup=admin_menu_kb())
-    await update.message.reply_text(_build_day_timeline(day, settings, appts), reply_markup=admin_menu_kb())
+    timeline = _build_day_timeline(day, settings, appts)
+    await update.message.reply_text(f"<code>{timeline}</code>", reply_markup=admin_menu_kb(), parse_mode="HTML")
     for a in appts:
         if a.status == AppointmentStatus.Booked:
             start_t = a.start_dt.astimezone(settings.tz).strftime("%H:%M")
